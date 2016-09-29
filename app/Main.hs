@@ -105,8 +105,12 @@ type Packet = BS.ByteString
 
 data PacketIter e a where
   Finish :: a -> PacketIter e a
-  GetPacket :: (Maybe Packet -> PacketIter e a) -> PacketIter e a
-  OtherEffects :: e x -> (x -> PacketIter e a) -> PacketIter e a
+  Effect :: e x -> (x -> PacketIter e a) -> PacketIter e a
+
+data Get i x where
+  Get :: Get i i
+
+type GetPacket = Get (Maybe Packet)
 
 data Printing x where
   Print :: String -> Printing ()
@@ -114,20 +118,17 @@ data Printing x where
 data Exception x where
   Throw :: String -> Exception x
 
-data Sum (f :: * -> *) (g :: * -> *) x = L (f x) | R (g x)
+-- [todo] implement using open unions instead
+data Sum (f :: * -> *) (g :: * -> *) (h :: * -> *) x
+    = G (f x) | P (g x) | T (h x)
 
-printEff :: String -> PacketIter (Sum Printing e) ()
-printEff s = OtherEffects (L $ Print s) return
+printEff :: String -> PacketIter (Sum _ Printing _) ()
+printEff s = Effect (P $ Print s) return
 
 instance Monad (PacketIter e) where
   return = Finish
   Finish a >>= f = f a
-  GetPacket k >>= f = GetPacket (\a -> k a >>= f)
-  OtherEffects e k >>= f = OtherEffects e (\a -> k a >>= f)
-
-  -- OtherEffect replaces
-  -- Print s k >>= f = Print s (\a -> k a >>= f)
-  -- Throw s >>= f = Throw s
+  Effect e k >>= f = Effect e (\a -> k a >>= f)
 
 instance Applicative (PacketIter e) where
   pure = return
@@ -136,17 +137,21 @@ instance Applicative (PacketIter e) where
 instance Functor (PacketIter e) where
   fmap = liftM
 
-streamPackets :: FileName -> PacketIter (Sum Printing Exception) a -> IO a
+type FileName = String
+
+streamPackets :: FileName
+                  -> PacketIter (Sum GetPacket Printing Exception) a
+                  -> IO a
 streamPackets fname it = do
   handle <- Pcap.openOffline fname
   let process (Finish a) = return a
-      process (GetPacket k) = do
+      process (Effect (G Get) k) = do
           (hdr, bs) <- Pcap.toBS =<< Pcap.next handle
           process (k $ Just bs)
-      process (OtherEffects (L (Print s)) k) = do
+      process (Effect (P (Print s)) k) = do
         putStrLn s
         process (k ())
-      process (OtherEffects (R (Throw s)) _) = do
+      process (Effect (T (Throw s)) _) = do
         -- [todo] handle better
         putStrLn s
         error s
@@ -154,8 +159,8 @@ streamPackets fname it = do
   -- [todo] close handle?
   -- [todo] handle EOF?
 
-getPacket :: PacketIter e (Maybe Packet)
-getPacket = GetPacket (Finish . maybe Nothing Just)
+getPacket :: PacketIter (Sum GetPacket _ _) (Maybe Packet)
+getPacket = Effect (G Get) Finish
 
 getPackets :: PacketIter _ ()
 getPackets = getPacket >>= \case
@@ -164,14 +169,17 @@ getPackets = getPacket >>= \case
         printEff $ show $ uncurry parseQuotePacket $ parseUDPPacket p
         getPackets
 
-take' :: Int -> PacketIter e a -> PacketIter e a
+take' :: Int -> PacketIter (Sum (Get (Maybe i)) x y) a
+              -> PacketIter (Sum (Get (Maybe i)) x y) a
 take' n (Finish a)    = Finish a
-take' 0 (GetPacket k) = GetPacket (\_ -> take' 0 (k Nothing))
-take' n (GetPacket k) = GetPacket (take' (n-1) . k)
-take' n (OtherEffects e k) = OtherEffects e (take' n . k)
+take' 0 (Effect (G Get) k) = Effect (G Get) (\_ -> take' 0 (k Nothing))
+take' n (Effect (G Get) k) = Effect (G Get) (take' (n-1) . k)
+take' n (Effect e k) = Effect e (take' n . k)
 
-filterPackets :: (Packet -> Bool) -> PacketIter e a -> PacketIter e a
+filterPackets :: (i -> Bool)
+                      -> PacketIter (Sum (Get (Maybe i)) x y) a
+                      -> PacketIter (Sum (Get (Maybe i)) x y) a
 filterPackets c (Finish a) = Finish a
-filterPackets c (GetPacket k) = GetPacket (filterPackets c . k .
+filterPackets c (Effect (G Get) k) = Effect (G Get) (filterPackets c . k .
       (>>= \p -> if c p then Just p else Nothing))
-filterPackets c (OtherEffects e k) = OtherEffects e (filterPackets c . k)
+filterPackets c (Effect e k) = Effect e (filterPackets c . k)
