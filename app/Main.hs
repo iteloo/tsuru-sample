@@ -2,6 +2,11 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE PartialTypeSignatures #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 
 module Main where
 
@@ -111,6 +116,16 @@ data Exception x where
 data Sum (f :: * -> *) (g :: * -> *) (h :: * -> *) x
     = G (f x) | P (g x) | T (h x)
 
+class Member e es where
+  inj :: e x -> es x
+  prj :: es x -> Maybe (e x)
+
+instance (i ~ i') => Member (Get i) (Sum (Get i') y z) where
+  inj = G
+  prj = \case
+    G x -> Just x
+    _ -> Nothing
+
 printEff :: String -> Iter (Sum _ Printing _) ()
 printEff s = Effect (P $ Print s) return
 
@@ -158,18 +173,21 @@ getForever = get >>= \case
         printEff $ show p
         getForever
 
-take :: Int -> Iter (Sum (Get (Maybe i)) x y) a
-            -> Iter (Sum (Get (Maybe i)) x y) a
-take n (Finish a)    = Finish a
-take 0 (Effect (G Get) k) = Effect (G Get) (\_ -> take 0 (k Nothing))
-take n (Effect (G Get) k) = Effect (G Get) (take (n-1) . k)
+take :: forall i e a . Member (Get (Maybe i)) e
+            => Int -> Iter e a -> Iter e a
+take n (Finish a)   = Finish a
+take 0 (Effect e k) | Just Get <- prj e :: Maybe (Get (Maybe i) _)
+                    = Effect e (\_ -> take 0 (k Nothing))
+take n (Effect e k) | Just Get <- prj e :: Maybe (Get (Maybe i) _)
+                    = Effect e (take (n-1) . k)
 take n (Effect e k) = Effect e (take n . k)
 
-filter :: (i -> Bool) -> Iter (Sum (Get (Maybe i)) x y) a
-                      -> Iter (Sum (Get (Maybe i)) x y) a
-filter c (Finish a) = Finish a
-filter c (Effect (G Get) k) = Effect (G Get) (filter c . k .
-      (>>= \p -> if c p then Just p else Nothing))
+filter :: forall i e a . Member (Get (Maybe i)) e
+            => (i -> Bool) -> Iter e a -> Iter e a
+filter c (Finish a)   = Finish a
+filter c (Effect e k) | Just Get <- prj e :: Maybe (Get (Maybe i) _)
+                      = Effect e (filter c . k .
+                          (>>= \p -> if c p then Just p else Nothing))
 filter c (Effect e k) = Effect e (filter c . k)
 
 transform :: (a -> b) -> Iter (Sum (Get b) x y) c
