@@ -8,28 +8,24 @@ module Main where
 import Lib
 
 import Prelude hiding (take, filter)
+import qualified Network.Pcap as Pcap
 import qualified Data.ByteString.Char8 as BS
-import qualified Data.Word
 import qualified Data.Time.LocalTime as LTime
 import qualified Data.Time.Clock as Clock
 import Control.Monad
-import qualified Network.Pcap as Pcap
 
 main :: IO ()
 main = do
   let header = BS.take 5 . BS.drop 42
   streamPackets "mdf-kospi200.20110216-0.pcap"
-    $ filter ((== BS.pack "B6034") . header)
+    $ filter ((== BS.pack "B6034") . header . snd)
     $ take 20
-    $ transform (liftM parseUDPPacket)
+    $ transform (liftM parsePacket)
     $ transform (liftM $ uncurry parseQuotePacket)
     $ getForever
 
 -- quote ac
--- Your program should print the packet and quote accept times,
--- the issue code,
--- followed by the bids from 5th to 1st,
--- then the asks from 1st to 5th
+
 type QuotePacket = BS.ByteString
 
 data Quote = Quote {
@@ -45,14 +41,18 @@ data Bid = Bid {
     quantity :: Int
   } deriving (Show)
 
--- extracts a range from a bytestring
+-- extracts substring of length `n` at location `i` of a bytestring
+-- returns approximate result (but no exception) if out of bound
 range :: Int -> Int -> BS.ByteString -> BS.ByteString
 range i n = BS.take n . BS.drop i
 
--- [todo] actually parse packet time
--- [problem] UTC or local?
-parseUDPPacket :: Packet -> (QuotePacket, Clock.DiffTime)
-parseUDPPacket p = (range 42 215 p, Clock.picosecondsToDiffTime 0)
+-- parses header and UDP packet into
+parsePacket :: Packet -> (QuotePacket, Clock.DiffTime)
+parsePacket (hdr, p) =
+  let s = fromIntegral $ Pcap.hdrSeconds hdr
+      ms = fromIntegral $ Pcap.hdrUseconds hdr
+      atime = Clock.picosecondsToDiffTime $ 10^12 * s + 10^6 * ms
+  in (range 42 215 p, atime)
 
 -- assumes packet begins with "B6034"
 -- and contains the right number of bytes
@@ -77,6 +77,7 @@ parseQuotePacket p ptime =
     asks        = parseBids $ range 96 60 p
   }
 
+-- assumes input is a bytestring of 8 digits
 parsePacketTime :: BS.ByteString -> Clock.DiffTime
 parsePacketTime bs =
   let hh = read $ BS.unpack $ range 0 2 bs :: Int
@@ -89,7 +90,7 @@ parsePacketTime bs =
 
 -- iteratees
 
-type Packet = BS.ByteString
+type Packet = (Pcap.PktHdr, BS.ByteString)
 
 data Iter e a where
   Finish :: a -> Iter e a
@@ -134,10 +135,8 @@ streamPackets fname it = do
   handle <- Pcap.openOffline fname
   let process (Finish a) = return a
       process (Effect (G Get) k) = do
-          (hdr, bs) <- Pcap.toBS =<< Pcap.next handle
-          -- let atime = Clock.picosecondsToDiffTime
-          --     $ 10^12 * hdrSeconds hdr + 10^6 * hdrUseconds hdr
-          process (k $ Just bs)
+          p <- Pcap.toBS =<< Pcap.next handle
+          process (k $ Just p)
       process (Effect (P (Print s)) k) = do
         putStrLn s
         process (k ())
@@ -160,14 +159,13 @@ getForever = get >>= \case
         getForever
 
 take :: Int -> Iter (Sum (Get (Maybe i)) x y) a
-              -> Iter (Sum (Get (Maybe i)) x y) a
+            -> Iter (Sum (Get (Maybe i)) x y) a
 take n (Finish a)    = Finish a
 take 0 (Effect (G Get) k) = Effect (G Get) (\_ -> take 0 (k Nothing))
 take n (Effect (G Get) k) = Effect (G Get) (take (n-1) . k)
 take n (Effect e k) = Effect e (take n . k)
 
-filter :: (i -> Bool)
-                      -> Iter (Sum (Get (Maybe i)) x y) a
+filter :: (i -> Bool) -> Iter (Sum (Get (Maybe i)) x y) a
                       -> Iter (Sum (Get (Maybe i)) x y) a
 filter c (Finish a) = Finish a
 filter c (Effect (G Get) k) = Effect (G Get) (filter c . k .
@@ -175,7 +173,7 @@ filter c (Effect (G Get) k) = Effect (G Get) (filter c . k .
 filter c (Effect e k) = Effect e (filter c . k)
 
 transform :: (a -> b) -> Iter (Sum (Get b) x y) c
-                  -> Iter (Sum (Get a) x y) c
+                      -> Iter (Sum (Get a) x y) c
 transform f (Finish a)          = Finish a
 transform f (Effect (G Get) k)  = Effect (G Get) (transform f . k . f)
 transform f (Effect (P e) k)    = Effect (P e) (transform f . k)
