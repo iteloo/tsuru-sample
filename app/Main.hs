@@ -17,12 +17,12 @@ import Control.Monad
 
 main :: IO ()
 main = do
-    streamPackets "mdf-kospi200.20110216-0.pcap"
-      $ filter (maybe False (== BS.pack "B6034") . header . snd)
+    streamPackets "mdf-kospi200.20110216-0.pcap"  -- [todo] streams from CL
+      $ filter (hasQuoteHeader . snd)
       $ take 20  -- [todo] remove on final version
-      $ transform (liftM quoteFromPacket)
+      $ transformData quoteFromPacket
+      $ filterMaybe
       $ getForever
-  where header = range 42 5
 
 -- quote parsing
 -- [todo] statically verify bytestring lengths and formats using LiquidHaskell
@@ -52,6 +52,10 @@ range :: Int -> Int -> BS.ByteString -> Maybe BS.ByteString
 range i n bs =
   let bs' = BS.take n . BS.drop i $ bs in
   if n == BS.length bs' then Just bs' else Nothing
+
+-- checks payload contains correct quote header
+hasQuoteHeader :: Payload -> Bool
+hasQuoteHeader = maybe False (== BS.pack "B6034") . range 42 5
 
 -- parses quote object from pcap packet
 quoteFromPacket :: Packet -> Maybe Quote
@@ -186,7 +190,7 @@ getForever :: Iter _ ()
 getForever = do
   a <- get
   let msg = case a of
-        NoData -> "End of stream"
+        NoData -> "No Data"
         Data x -> show x
   printEff msg
   getForever
@@ -206,6 +210,17 @@ filter c e@(Effect (G Get) k) = Effect (G Get) (filter c . loop)
           loop (Data i) = if c i then k (Data i) else e
 filter c (Effect e k) = Effect e (filter c . k)
 
+-- a filter that blocks `Nothing` and output `a` for `Just a`
+filterMaybe :: Iter (Sum3 (Get (Data i)) x y) a
+              -> Iter (Sum3 (Get (Data (Maybe i))) x y) a
+filterMaybe (Finish a)           = Finish a
+filterMaybe e@(Effect (G Get) k) = Effect (G Get) (filterMaybe . loop)
+    where loop NoData                  = k NoData
+          loop (Data i) | Just x <- i  = k $ Data x
+          loop (Data i) | Nothing <- i = e
+filterMaybe (Effect (P e) k) = Effect (P e) (filterMaybe . k)
+filterMaybe (Effect (T e) k) = Effect (T e) (filterMaybe . k)
+
 transform :: (a -> b) -> Iter (Sum3 (Get b) x y) c
                       -> Iter (Sum3 (Get a) x y) c
 transform f (Finish a)          = Finish a
@@ -213,6 +228,9 @@ transform f (Effect (G Get) k)  = Effect (G Get) (transform f . k . f)
 transform f (Effect (P e) k)    = Effect (P e) (transform f . k)
 transform f (Effect (T e) k)    = Effect (T e) (transform f . k)
 
+transformData :: (a -> b) -> Iter (Sum3 (Get (Data b)) x y) c
+                      -> Iter (Sum3 (Get (Data a)) x y) c
+transformData f = transform $ liftM f
 
 -- helpers
 
