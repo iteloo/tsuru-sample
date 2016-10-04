@@ -8,77 +8,82 @@ module Main where
 import Lib
 
 import Prelude hiding (take, filter)
+import Control.Monad
 import qualified Prelude as Pre
 import qualified Network.Pcap as Pcap
 import qualified Data.ByteString.Char8 as BS
-import qualified Data.Time.LocalTime as LTime
-import qualified Data.Time.Clock as Clock
+import qualified Data.Time as T
+import qualified Data.Time.Clock.POSIX as T
 import qualified Data.List as L
-import Control.Monad
+import qualified Data.Set as Set
+import System.IO.Unsafe (unsafePerformIO)
 
 
 main :: IO ()
 main = do
     streamPackets "mdf-kospi200.20110216-0.pcap"  -- [todo] streams from CL
       $ filter (hasQuoteHeader . snd)
-      $ take 100  -- [todo] remove on final version
+      $ take 2000  -- [todo] remove on final version
       $ transformData quoteFromPacket
       $ filterMaybe
-      -- $ reord [] emptyQueue
+      $ reorderQuotes
       $ getForever
 
--- when quotes arrive:
-  -- read and store current packet accept time into `now`
-  -- quotes in buffer with quote accept time older than 3s from `now`
-  --   can be assumed to be exempt from reordering
-  -- hence, every time `now` updates, find quotes in buffer with
-  -- accept time older then 3s, reorder them, and push into output queue
--- when quotes are requested:
-  -- if output queue isn't empty, draw from there
-  -- otherwise, send a new request
-reord :: Queue Quote -> Queue Quote
-                  -> Iter (Sum3 (Get (Data Quote)) x y) a
-                  -> Iter (Sum3 (Get (Data Quote)) x y) a
-reord buf outQ (Finish a) = Finish a
-reord buf outQ (Effect (G Get) k) =
-  case draw outQ of
-    Nothing -> Effect (G Get) (\case
-      -- [todo] [think] abstract this away somehow...
-      NoData -> k NoData
-      Data q ->
-        let now = packetTime q
-            buf' = push q buf
-            -- [todo] [problem] account for midnight
-            -- [think] use UTC instead of DiffTime?
-            (toOrd, buf'') = extract
-              ((> Clock.secondsToDiffTime 3) . (now -) . acceptTime)
-              buf'
-            orded = L.sortOn acceptTime toOrd
-        in reord buf'' (pushMany orded outQ) (Effect (G Get) k)
-        )
-    Just (q, outQ') -> reord buf outQ' (k (Data q))
-reord buf outQ (Effect e k) = Effect e (reord buf outQ . k)
 
-type Queue a = [a]
-
-emptyQueue = []
-
--- [todo] devise more efficient impl
-push :: a -> Queue a -> Queue a
-push a q = q ++ [a]
-
-pushMany :: [a] -> Queue a -> Queue a
-pushMany new old = old ++ new
-
-draw :: Queue a -> Maybe (a, Queue a)
-draw [] = Nothing
-draw (a:as) = Just (a,as)
-
-extract :: (a -> Bool) -> Queue a -> ([a], Queue a)
-extract c =
-  foldr (\a (as,q') ->
-    if c a then (a:as,q') else (as, push a q')  -- as should prob be reversed
-  ) ([], emptyQueue)
+-- reorders quotes based on quote accept time
+-- assumes that `pt - qt <= 3` for each quote,
+  -- where `pt` : packet accept time
+  --       `qt` : quote accept time
+-- we implement this using a set buffer, ordered by `qt`
+--   and a variable `pt_max`
+-- when a new quote arrives, we
+  -- add it to the buffer,
+  -- update `pt_max` to using its `pt`
+-- when a quote is requested, we
+  -- take the min `m` from the buffer
+    -- i.e. the quote with least `qt`
+  -- if no such `m` exists,
+    -- we send a request
+  -- if `pt_max - qt_m > 3`, we answer to the request using `m`
+    -- proof that `qt_m` <= qt_q` for any `q` in the buffer, and
+    -- for all `q`s that we might receive in the future:
+      -- suppose `q` is a quote in the buffer, then
+        -- `qt_m <= qt_q` by defn as the min
+      -- suppose `f` is a future quote, then since `pt_f > pt_max`,
+        -- `qt_m < pt_max - 3 < pt_f - 3 <= qt_f
+    -- proof that we cannot do better: if pt_max - qt_m = 3 - e, then
+    -- there could be a future `q` such that `qt_m > qt_q`
+      -- let `q` be a packet with
+        -- `qt_q = pt_max - 3 + e/2` and `pt_q = pt_max + e/3`
+      -- `qt_m = pt_max - 3 + e > qt_q`
+      -- `pt_q > pt_max`
+      -- `pt_q - qt_q = 3 - e/6 < 3`
+  -- otherwise, we send a request
+reorderQuotes :: Iter (Sum3 (Get (Data Quote)) x y) a
+              -> Iter (Sum3 (Get (Data Quote)) x y) a
+reorderQuotes = reord (T.posixSecondsToUTCTime 0) Set.empty  -- bogus initial pmax
+  where
+    reord :: T.UTCTime -> Set.Set Quote
+            -> Iter (Sum3 (Get (Data Quote)) x y) a
+            -> Iter (Sum3 (Get (Data Quote)) x y) a
+    reord pmax buf (Finish a) = Finish a
+    reord pmax buf (Effect (G Get) k) =
+      case Set.minView buf of
+        Just (q, buf') ->
+          if T.diffUTCTime pmax (acceptTime q) > maxOffset
+            then reord pmax buf' (k (Data q))
+            else request
+        Nothing -> request
+      where
+        request = Effect (G Get) $ \case
+          -- [todo] [fix] handle this case
+          NoData -> undefined
+          Data q ->
+            let pmax' = packetTime q
+                -- [todo] [fix] multiple quotes for same accept time
+                buf' = Set.insert q buf
+            in reord pmax' buf' (Effect (G Get) k)
+    reord pmax buf (Effect e k) = Effect e (reord pmax buf . k)
 
 
 -- quote parsing
@@ -91,17 +96,20 @@ type Payload = BS.ByteString
 type QuotePacket = BS.ByteString
 
 data Quote = Quote {
-    packetTime  :: Clock.DiffTime,
-    acceptTime  :: Clock.DiffTime,
+    -- [note] `accepTime` must be first for ordering to work correctly!
+    acceptTime  :: T.UTCTime,
+    packetTime  :: T.UTCTime,
     issueCode   :: String,
     bids        :: [Bid],
     asks        :: [Bid]
-  } deriving (Show)
+  } deriving (Show, Eq, Ord)
 
 data Bid = Bid {
     price :: Int,
     quantity :: Int
-  } deriving (Show)
+  } deriving (Show, Eq, Ord)
+
+maxOffset = 3
 
 -- extracts substring of length `n` at location `i` of a bytestring
 -- returns Nothing if out of bound
@@ -126,37 +134,61 @@ quotePacketFromPayload :: Payload -> Maybe QuotePacket
 quotePacketFromPayload = range 42 215
 
 -- parses packet accept time from pcap header
-packetAcceptTimeFromHeader :: Pcap.PktHdr -> Clock.DiffTime
-packetAcceptTimeFromHeader hdr =
-  let s     = fromIntegral $ Pcap.hdrSeconds hdr
-      ms    = fromIntegral $ Pcap.hdrUseconds hdr
-  in Clock.picosecondsToDiffTime $ 10^12 * s + 10^6 * ms
+-- assumes in POSIX time
+packetAcceptTimeFromHeader :: Pcap.PktHdr -> T.UTCTime
+packetAcceptTimeFromHeader =
+  T.posixSecondsToUTCTime . fromRational . toRational . Pcap.hdrDiffTime
 
 -- constructs quote object from quote packet and packet accept time
 -- does not check that quote packet begins with "B6034"
-quoteFromQuotePacket :: QuotePacket -> Clock.DiffTime -> Maybe Quote
+quoteFromQuotePacket :: QuotePacket -> T.UTCTime -> Maybe Quote
 quoteFromQuotePacket p ptime = do
-  acceptTime <- parseAcceptTime =<< range 206 8 p
+  aToD <- parseAcceptTimeOfDay =<< range 206 8 p
+  -- [todo] handle exception explicitly
+  acceptTime <- extrapolateAcceptTime aToD ptime
   issueCode <- liftM BS.unpack $ range 5 12 p
   bids <- parseBids =<< range 29 60 p
   asks <- parseBids =<< range 96 60 p
   return Quote {
-    packetTime  = ptime,
     acceptTime  = acceptTime,
+    packetTime  = ptime,
     issueCode   = issueCode,
     bids        = reverse bids,
     asks        = asks
   }
   where
     -- assumes input is a bytestring of 8 digits
-    parseAcceptTime :: BS.ByteString -> Maybe Clock.DiffTime
-    parseAcceptTime bs = do
+    parseAcceptTimeOfDay :: BS.ByteString -> Maybe T.TimeOfDay
+    parseAcceptTimeOfDay bs = do
       hh <- safeRead =<< liftM BS.unpack (range 0 2 bs)
       mm <- safeRead =<< liftM BS.unpack (range 2 2 bs)
       ss <- safeRead =<< liftM BS.unpack (range 4 2 bs)
       uu <- safeRead =<< liftM BS.unpack (range 6 2 bs)
       let pico = fromRational $ (fromIntegral ss) + (fromIntegral uu) / 100
-      return $ LTime.timeOfDayToTime $ LTime.TimeOfDay hh mm pico
+      return $ T.TimeOfDay hh mm pico
+
+    -- uses the packet accept time and possible list of time zones
+    -- to find quote accept time satisfying the 3s constraint
+    -- [todo] allow users to specify list of time zones
+    extrapolateAcceptTime :: T.TimeOfDay -> T.UTCTime
+                                    -> Maybe T.UTCTime
+    extrapolateAcceptTime aToD ptime =
+      let tzones = [T.hoursToTimeZone 9]
+          atimes = do
+            tz <- tzones
+            let day = T.localDay $ T.utcToLocalTime tz ptime
+            -- [note] we have to account for the possibility that
+            --   the quote was accepted on the previous local day,
+            --   but the packet is accepted on the next day
+            -- [note] uniqueness relies on `maxOffset` to be less
+            --   than half a day
+            d <- [day, T.addDays (-1) day]
+            let t = T.LocalTime d aToD
+            return $ T.localTimeToUTC tz t
+      in
+        -- [note] we expect exactly one result assuming that the
+        --   3s constraint is satisfied
+        L.find ((< maxOffset) . T.diffUTCTime ptime) atimes
 
     -- assumes input is a bytestring of 60 (= (5+7)*5) digits
     -- [todo] check statically with LiquidHaskell
@@ -295,3 +327,8 @@ safeRead :: Read a => String -> Maybe a
 safeRead s = case reads s of
     [(x,"")] -> Just x
     _ -> Nothing
+
+logVal :: Show a => a -> a
+logVal a = unsafePerformIO $ do
+  print a
+  return a
