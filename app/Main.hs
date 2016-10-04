@@ -8,10 +8,12 @@ module Main where
 import Lib
 
 import Prelude hiding (take, filter)
+import qualified Prelude as Pre
 import qualified Network.Pcap as Pcap
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Time.LocalTime as LTime
 import qualified Data.Time.Clock as Clock
+import qualified Data.List as L
 import Control.Monad
 
 
@@ -19,10 +21,65 @@ main :: IO ()
 main = do
     streamPackets "mdf-kospi200.20110216-0.pcap"  -- [todo] streams from CL
       $ filter (hasQuoteHeader . snd)
-      $ take 20  -- [todo] remove on final version
+      $ take 100  -- [todo] remove on final version
       $ transformData quoteFromPacket
       $ filterMaybe
+      -- $ reord [] emptyQueue
       $ getForever
+
+-- when quotes arrive:
+  -- read and store current packet accept time into `now`
+  -- quotes in buffer with quote accept time older than 3s from `now`
+  --   can be assumed to be exempt from reordering
+  -- hence, every time `now` updates, find quotes in buffer with
+  -- accept time older then 3s, reorder them, and push into output queue
+-- when quotes are requested:
+  -- if output queue isn't empty, draw from there
+  -- otherwise, send a new request
+reord :: Queue Quote -> Queue Quote
+                  -> Iter (Sum3 (Get (Data Quote)) x y) a
+                  -> Iter (Sum3 (Get (Data Quote)) x y) a
+reord buf outQ (Finish a) = Finish a
+reord buf outQ (Effect (G Get) k) =
+  case draw outQ of
+    Nothing -> Effect (G Get) (\case
+      -- [todo] [think] abstract this away somehow...
+      NoData -> k NoData
+      Data q ->
+        let now = packetTime q
+            buf' = push q buf
+            -- [todo] [problem] account for midnight
+            -- [think] use UTC instead of DiffTime?
+            (toOrd, buf'') = extract
+              ((> Clock.secondsToDiffTime 3) . (now -) . acceptTime)
+              buf'
+            orded = L.sortOn acceptTime toOrd
+        in reord buf'' (pushMany orded outQ) (Effect (G Get) k)
+        )
+    Just (q, outQ') -> reord buf outQ' (k (Data q))
+reord buf outQ (Effect e k) = Effect e (reord buf outQ . k)
+
+type Queue a = [a]
+
+emptyQueue = []
+
+-- [todo] devise more efficient impl
+push :: a -> Queue a -> Queue a
+push a q = q ++ [a]
+
+pushMany :: [a] -> Queue a -> Queue a
+pushMany new old = old ++ new
+
+draw :: Queue a -> Maybe (a, Queue a)
+draw [] = Nothing
+draw (a:as) = Just (a,as)
+
+extract :: (a -> Bool) -> Queue a -> ([a], Queue a)
+extract c =
+  foldr (\a (as,q') ->
+    if c a then (a:as,q') else (as, push a q')  -- as should prob be reversed
+  ) ([], emptyQueue)
+
 
 -- quote parsing
 -- [todo] statically verify bytestring lengths and formats using LiquidHaskell
