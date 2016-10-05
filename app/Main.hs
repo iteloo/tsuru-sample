@@ -11,6 +11,7 @@ import Lib
 import Prelude hiding (take, drop, filter)
 import Control.Monad
 import qualified Prelude as Pre
+import qualified System.Environment as Env
 import qualified Network.Pcap as Pcap
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Time as T
@@ -22,15 +23,32 @@ import System.IO.Unsafe (unsafePerformIO)
 
 main :: IO ()
 main = do
-    streamPackets "mdf-kospi200.20110216-0.pcap"  -- [todo] streams from CL
-      $ filter (hasQuoteHeader . snd)
-      -- $ drop 12000
-      -- $ take 4000
-      $ transformData quoteFromPacket
-      $ filterMaybe
-      $ reorderQuotes
-      $ getForever
+  args <- Env.getArgs
+  -- "mdf-kospi200.20110216-0.pcap"
+  case parseArgs args of
+    Nothing -> print "Invalid arguments"
+    Just appSetting -> startApp appSetting
 
+startApp :: AppSetting -> IO ()
+startApp settings =
+  streamPackets (filename settings)
+    $ filter (hasQuoteHeader . snd)
+    -- $ drop 12000
+    -- $ take 4000
+    $ transformData quoteFromPacket
+    $ filterMaybe
+    $ (if reorder settings then reorderQuotes else id)
+    $ getForever
+
+data AppSetting = AppSetting {
+  filename :: String,
+  reorder  :: Bool
+}
+
+parseArgs :: [String] -> Maybe AppSetting
+parseArgs [fn]        = Just $ AppSetting fn False
+parseArgs ["-r", fn]  = Just $ AppSetting fn True
+parseArgs _           = Nothing
 
 -- quote parsing
 -- [todo] statically verify bytestring lengths and formats using LiquidHaskell
