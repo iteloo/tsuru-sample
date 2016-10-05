@@ -2,12 +2,13 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE PartialTypeSignatures #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Main where
 
 import Lib
 
-import Prelude hiding (take, filter)
+import Prelude hiding (take, drop, filter)
 import Control.Monad
 import qualified Prelude as Pre
 import qualified Network.Pcap as Pcap
@@ -23,7 +24,8 @@ main :: IO ()
 main = do
     streamPackets "mdf-kospi200.20110216-0.pcap"  -- [todo] streams from CL
       $ filter (hasQuoteHeader . snd)
-      $ take 2000  -- [todo] remove on final version
+      -- $ drop 12000
+      -- $ take 4000
       $ transformData quoteFromPacket
       $ filterMaybe
       $ reorderQuotes
@@ -41,31 +43,30 @@ type QuotePacket = BS.ByteString
 
 data Quote = Quote {
     -- [note] `accepTime` must be first for ordering to work correctly!
-    acceptTime  :: T.UTCTime,
-    packetTime  :: T.UTCTime,
-    issueCode   :: String,
-    bids        :: [Bid],
-    asks        :: [Bid]
+    acceptTime  :: !T.UTCTime,
+    packetTime  :: !T.UTCTime,
+    issueCode   :: !String,
+    bids        :: ![Bid],
+    asks        :: ![Bid]
   } deriving (Eq, Ord)
 
 instance Show Quote where
   show = showQuote
 
 data Bid = Bid {
-    price :: Int,
-    quantity :: Int
+    price    :: !Int,
+    quantity :: !Int
   } deriving (Show, Eq, Ord)
 
 showQuote :: Quote -> String
-showQuote q = string $ fmap ($ q) [
+showQuote q = unwords $ fmap ($ q) [
     show . packetTime,
     show . acceptTime,
     issueCode,
-    string . fmap showBid . bids,
-    string . fmap showBid . asks
+    unwords . fmap showBid . bids,
+    unwords . fmap showBid . asks
   ]
   where
-    string = foldr (\a b -> a ++ " " ++ b) ""
     showBid b = (show $ quantity b) ++ "@" ++ (show $ price b)
 
 maxOffset :: T.NominalDiffTime
@@ -134,6 +135,7 @@ quoteFromQuotePacket p ptime = do
                                     -> Maybe T.UTCTime
     extrapolateAcceptTime aToD ptime =
       let tzones = [T.hoursToTimeZone 9]
+          -- nondeterministic search for timezone
           atimes = do
             tz <- tzones
             let day = T.localDay $ T.utcToLocalTime tz ptime
@@ -219,8 +221,10 @@ streamPackets fname it = do
   handle <- Pcap.openOffline fname
   let process (Finish a) = return a
       process (Effect (G Get) k) = do
-          p <- Pcap.toBS =<< Pcap.next handle
-          process (k $ Data p)
+          (hdr, bs) <- Pcap.nextBS handle
+          process . k $ if bs == BS.pack ""
+            then NoData
+            else Data (hdr, bs)
       process (Effect (P (Print s)) k) = do
         putStrLn s
         process (k ())
@@ -229,8 +233,7 @@ streamPackets fname it = do
         putStrLn s
         error s
   process it
-  -- [todo] close handle?
-  -- [todo] handle EOF?
+  -- [note] no need/way to close handle
 
 get :: Iter _ (Data a)
 get = Effect (G Get) Finish
@@ -246,12 +249,21 @@ getForever = do
       printEff $ show x
       getForever
 
+drop :: Int -> Iter (Sum3 (Get (Data i)) x y) a
+            -> Iter (Sum3 (Get (Data i)) x y) a
+drop n (Finish a)         = Finish a
+drop 0 e@(Effect (G Get) k) = e
+drop n e@(Effect (G Get) k) = Effect (G Get) $ drop (n-1) . \case
+                              NoData -> k NoData
+                              Data _ -> e
+drop n (Effect e k)       = Effect e (drop n . k)
+
 take :: Int -> Iter (Sum3 (Get (Data i)) x y) a
             -> Iter (Sum3 (Get (Data i)) x y) a
-take n (Finish a)    = Finish a
-take 0 (Effect (G Get) k) = Effect (G Get) (\_ -> take 0 (k NoData))
+take n (Finish a)         = Finish a
+take 0 (Effect (G Get) k) = take 0 (k NoData)
 take n (Effect (G Get) k) = Effect (G Get) (take (n-1) . k)
-take n (Effect e k) = Effect e (take n . k)
+take n (Effect e k)       = Effect e (take n . k)
 
 filter :: (i -> Bool) -> Iter (Sum3 (Get (Data i)) x y) a
                       -> Iter (Sum3 (Get (Data i)) x y) a
@@ -313,6 +325,7 @@ transformData f = transform $ liftM f
       -- `pt_q - qt_q = 3 - e/6 < 3`
   -- otherwise, we send a request
 -- when EOF, flush everything in the buffer
+-- [think] is Set really the right choice? no duplicate would be stored
 reorderQuotes :: Iter (Sum3 (Get (Data Quote)) x y) a
               -> Iter (Sum3 (Get (Data Quote)) x y) a
 reorderQuotes = reord (T.posixSecondsToUTCTime 0) Set.empty  -- bogus initial pmax
