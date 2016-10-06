@@ -33,7 +33,7 @@ startApp :: AppSetting -> IO ()
 startApp settings =
   streamPackets (filename settings)
     $ filter (hasQuoteHeader . snd)
-    -- $ drop 12000
+    -- $ drop 16000
     -- $ take 4000
     $ transformData quoteFromPacket
     $ filterMaybe
@@ -267,50 +267,61 @@ getForever = do
       printEff $ show x
       getForever
 
-drop :: Int -> Iter (Sum3 (Get (Data i)) x y) a
-            -> Iter (Sum3 (Get (Data i)) x y) a
-drop n (Finish a)         = Finish a
-drop 0 e@(Effect (G Get) k) = e
-drop n e@(Effect (G Get) k) = Effect (G Get) $ drop (n-1) . \case
-                              NoData -> k NoData
-                              Data _ -> e
-drop n (Effect e k)       = Effect e (drop n . k)
+handleGetS :: ((s -> Iter (Sum3 (Get i) x y) a -> Iter (Sum3 z x y) a)
+              -> s
+              -> (i -> Iter (Sum3 (Get i) x y) a)
+              -> Iter (Sum3 z x y) a)
+            -> s
+            -> Iter (Sum3 (Get i) x y) a
+            -> Iter (Sum3 z x y) a
+handleGetS f s (Finish a) = Finish a
+handleGetS f s (Effect (G Get) k) = f (handleGetS f) s k
+handleGetS f s (Effect (P e) k) = Effect (P e) (handleGetS f s . k)
+handleGetS f s (Effect (T e) k) = Effect (T e) (handleGetS f s . k)
 
-take :: Int -> Iter (Sum3 (Get (Data i)) x y) a
-            -> Iter (Sum3 (Get (Data i)) x y) a
-take n (Finish a)         = Finish a
-take 0 (Effect (G Get) k) = take 0 (k NoData)
-take n (Effect (G Get) k) = Effect (G Get) (take (n-1) . k)
-take n (Effect e k)       = Effect e (take n . k)
+-- handleGet :: ((Iter (Sum3 (Get i) x y) a -> Iter (Sum3 z x y) a)
+--               -> (i -> Iter (Sum3 (Get i) x y) a) -> Iter (Sum3 z x y) a)
+--         -> Iter (Sum3 (Get i) x y) a -> Iter (Sum3 z x y) a
+handleGet f = handleGetS g ()
+  where g h _ k = f (h ()) k
 
-filter :: (i -> Bool) -> Iter (Sum3 (Get (Data i)) x y) a
-                      -> Iter (Sum3 (Get (Data i)) x y) a
-filter c (Finish a) = Finish a
-filter c e@(Effect (G Get) k) = Effect (G Get) (filter c . loop)
-    where loop NoData  = k NoData
-          loop (Data i) = if c i then k (Data i) else e
-filter c (Effect e k) = Effect e (filter c . k)
+-- drop :: Int -> Iter (Sum3 (Get (Data i)) x y) a
+--               -> Iter (Sum3 (Get (Data i)) x y) a
+drop = handleGetS f
+  where f h 0 k = Effect (G Get) k
+        f h n k = Effect (G Get) $ h (n-1) . \case
+                    NoData -> k NoData
+                    Data _ -> Effect (G Get) k
+
+-- take :: Int -> Iter (Sum3 (Get (Data i)) x y) a
+--             -> Iter (Sum3 (Get (Data i)) x y) a
+take = handleGetS f
+  where f h 0 k = h 0 (k NoData)
+        f h n k = Effect (G Get) (h (n-1) . k)
+
+-- filter :: (i -> Bool) -> Iter (Sum3 (Get (Data i)) x y) a
+--                       -> Iter (Sum3 (Get (Data i)) x y) a
+filter c = handleGet f
+  where f h k = Effect (G Get) $ h . \case
+          NoData -> k NoData
+          Data i -> if c i then k (Data i) else (Effect (G Get) k)
 
 -- a filter that blocks `Nothing` and output `a` for `Just a`
-filterMaybe :: Iter (Sum3 (Get (Data i)) x y) a
-              -> Iter (Sum3 (Get (Data (Maybe i))) x y) a
-filterMaybe (Finish a)           = Finish a
-filterMaybe e@(Effect (G Get) k) = Effect (G Get) (filterMaybe . loop)
-    where loop NoData                  = k NoData
-          loop (Data i) | Just x <- i  = k $ Data x
-          loop (Data i) | Nothing <- i = e
-filterMaybe (Effect (P e) k) = Effect (P e) (filterMaybe . k)
-filterMaybe (Effect (T e) k) = Effect (T e) (filterMaybe . k)
+-- filterMaybe :: Iter (Sum3 (Get (Data i)) x y) a
+--               -> Iter (Sum3 (Get (Data (Maybe i))) x y) a
+filterMaybe = handleGet f
+  where f h k = Effect (G Get) $ h . \case
+                  NoData        -> k NoData
+                  Data (Just i) -> k $ Data i
+                  _             -> Effect (G Get) k
 
-transform :: (a -> b) -> Iter (Sum3 (Get b) x y) c
-                      -> Iter (Sum3 (Get a) x y) c
-transform f (Finish a)          = Finish a
-transform f (Effect (G Get) k)  = Effect (G Get) (transform f . k . f)
-transform f (Effect (P e) k)    = Effect (P e) (transform f . k)
-transform f (Effect (T e) k)    = Effect (T e) (transform f . k)
+-- transform :: (a -> b) -> Iter (Sum3 (Get b) x y) c
+--                       -> Iter (Sum3 (Get a) x y) c
+transform f = handleGet g
+  where g h k = Effect (G Get) (h . k . f)
 
-transformData :: (a -> b) -> Iter (Sum3 (Get (Data b)) x y) c
-                      -> Iter (Sum3 (Get (Data a)) x y) c
+-- transformData :: (a -> b) -> Iter (Sum3 (Get (Data b)) x y) c
+--                       -> Iter (Sum3 (Get (Data a)) x y) c
 transformData f = transform $ liftM f
 
 -- reorders quotes based on quote accept time
@@ -344,41 +355,31 @@ transformData f = transform $ liftM f
   -- otherwise, we send a request
 -- when EOF, flush everything in the buffer
 -- [think] is Set really the right choice? no duplicate would be stored
-reorderQuotes :: Iter (Sum3 (Get (Data Quote)) x y) a
-              -> Iter (Sum3 (Get (Data Quote)) x y) a
-reorderQuotes = reord (T.posixSecondsToUTCTime 0) Set.empty  -- bogus initial pmax
+-- reorderQuotes :: Iter (Sum3 (Get (Data Quote)) x y) a
+--               -> Iter (Sum3 (Get (Data Quote)) x y) a
+reorderQuotes = handleGetS f (T.posixSecondsToUTCTime 0, Set.empty)  -- bogus initial pmax
   where
-    reord :: T.UTCTime -> Set.Set Quote
-            -> Iter (Sum3 (Get (Data Quote)) x y) a
-            -> Iter (Sum3 (Get (Data Quote)) x y) a
-    reord pmax buf (Finish a) = Finish a
-    reord pmax buf (Effect (G Get) k) =
+    f h (pmax, buf) k =
       case Set.minView buf of
         Just (q, buf') ->
           if T.diffUTCTime pmax (acceptTime q) > maxOffset
-            then reord pmax buf' (k (Data q))
+            then h (pmax, buf') (k (Data q))
             else request
         Nothing -> request
       where
         request = Effect (G Get) $ \case
           -- [todo] [fix] handle this case
-          NoData -> flush buf (Effect (G Get) k)
+          NoData -> handleGetS flush buf (Effect (G Get) k)
           Data q ->
             let pmax' = packetTime q
                 -- [todo] [fix] multiple quotes for same accept time
                 buf' = Set.insert q buf
-            in reord pmax' buf' (Effect (G Get) k)
+            in h (pmax', buf') (Effect (G Get) k)
 
-        flush :: Set.Set Quote
-                -> Iter (Sum3 (Get (Data Quote)) x y) a
-                -> Iter (Sum3 (Get (Data Quote)) x y) a
-        flush buf (Finish a)          = Finish a
-        flush buf (Effect (G Get) k)  =
+        flush h buf k =
           case Set.minView buf of
-            Just (q, buf') -> flush buf' (k (Data q))
-            Nothing -> flush buf (k NoData)
-        flush buf (Effect e k)        = Effect e (flush buf . k)
-    reord pmax buf (Effect e k) = Effect e (reord pmax buf . k)
+            Just (q, buf') -> h buf' (k (Data q))
+            Nothing -> h buf (k NoData)
 
 
 -- helpers
