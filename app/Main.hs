@@ -267,14 +267,28 @@ getForever = do
       printEff $ show x
       getForever
 
+handleGet :: ((s -> Iter (Sum3 (Get i) x y) a -> Iter (Sum3 z x y) a)
+              -> (i -> Iter (Sum3 (Get i) x y) a) -> Iter (Sum3 z x y) a)
+        -> Iter (Sum3 (Get i) x y) a -> s -> Iter (Sum3 z x y) a
+handleGet f s (Finish a) = Finish a
+handleGet f s (Effect (G Get) k) = f (handleGet f s) k
+handleGet f s (Effect (P e) k) = Effect (P e) (handleGet f s . k)
+handleGet f s (Effect (T e) k) = Effect (T e) (handleGet f s . k)
+
 drop :: Int -> Iter (Sum3 (Get (Data i)) x y) a
             -> Iter (Sum3 (Get (Data i)) x y) a
-drop n (Finish a)         = Finish a
+drop n (Finish a)           = Finish a
 drop 0 e@(Effect (G Get) k) = e
 drop n e@(Effect (G Get) k) = Effect (G Get) $ drop (n-1) . \case
-                              NoData -> k NoData
-                              Data _ -> e
-drop n (Effect e k)       = Effect e (drop n . k)
+                                NoData -> k NoData
+                                Data _ -> e
+drop n (Effect e k)         = Effect e (drop n . k)
+--
+-- drop' = handleGet f
+--   where f _ k 0 = Effect (G Get) k
+--         f h k n = Effect (G Get) $ h . \case
+--           NoData -> k NoData
+--           Data _ -> Effect (G Get) k
 
 take :: Int -> Iter (Sum3 (Get (Data i)) x y) a
             -> Iter (Sum3 (Get (Data i)) x y) a
@@ -285,11 +299,10 @@ take n (Effect e k)       = Effect e (take n . k)
 
 filter :: (i -> Bool) -> Iter (Sum3 (Get (Data i)) x y) a
                       -> Iter (Sum3 (Get (Data i)) x y) a
-filter c (Finish a) = Finish a
-filter c e@(Effect (G Get) k) = Effect (G Get) (filter c . loop)
-    where loop NoData  = k NoData
-          loop (Data i) = if c i then k (Data i) else e
-filter c (Effect e k) = Effect e (filter c . k)
+filter c = handleGet f
+  where f h k = Effect (G Get) $ h . \case
+          NoData -> k NoData
+          Data i -> if c i then k (Data i) else (Effect (G Get) k)
 
 -- a filter that blocks `Nothing` and output `a` for `Just a`
 filterMaybe :: Iter (Sum3 (Get (Data i)) x y) a
