@@ -33,7 +33,7 @@ startApp :: AppSetting -> IO ()
 startApp settings =
   streamPackets (filename settings)
     $ filter (hasQuoteHeader . snd)
-    -- $ drop 16000
+    $ drop 16000
     -- $ take 4000
     $ transformData quoteFromPacket
     $ filterMaybe
@@ -213,8 +213,8 @@ data Exception x where
 data Sum3 (f :: * -> *) (g :: * -> *) (h :: * -> *) x
     = G (f x) | P (g x) | T (h x)
 
-printEff :: String -> Iter (Sum3 x Printing z) ()
-printEff s = Effect (P $ Print s) return
+printS :: String -> Iter (Sum3 x Printing z) ()
+printS s = Effect (P $ Print s) return
 
 data Data a = NoData | Data a
 
@@ -253,18 +253,16 @@ streamPackets fname it = do
   process it
   -- [note] no need/way to close handle
 
-get :: Iter _ (Data a)
-get = Effect (G Get) Finish
+-- get :: Iter _ (Data a)
+get = Effect (G Get) return
 
-getForever :: Iter _ ()
-getForever = do
-  a <- get
-  case a of
+-- getForever :: Iter _ ()
+getForever = get >>= \case
     NoData -> do
-      printEff "End of stream"
+      printS "End of stream"
       return ()
     Data x -> do
-      printEff $ show x
+      printS $ show x
       getForever
 
 handleGetS :: ((s -> Iter (Sum3 (Get i) x y) a -> Iter (Sum3 z x y) a)
@@ -288,37 +286,37 @@ handleGet f = handleGetS g ()
 -- drop :: Int -> Iter (Sum3 (Get (Data i)) x y) a
 --               -> Iter (Sum3 (Get (Data i)) x y) a
 drop = handleGetS f
-  where f h 0 k = Effect (G Get) k
-        f h n k = Effect (G Get) $ h (n-1) . \case
+  where f h 0 k = get >>= k
+        f h n k = get >>= h (n-1) . \case
                     NoData -> k NoData
-                    Data _ -> Effect (G Get) k
+                    Data _ -> get >>= k
 
 -- take :: Int -> Iter (Sum3 (Get (Data i)) x y) a
 --             -> Iter (Sum3 (Get (Data i)) x y) a
 take = handleGetS f
   where f h 0 k = h 0 (k NoData)
-        f h n k = Effect (G Get) (h (n-1) . k)
+        f h n k = get >>= h (n-1) . k
 
 -- filter :: (i -> Bool) -> Iter (Sum3 (Get (Data i)) x y) a
 --                       -> Iter (Sum3 (Get (Data i)) x y) a
 filter c = handleGet f
-  where f h k = Effect (G Get) $ h . \case
+  where f h k = get >>= h . \case
           NoData -> k NoData
-          Data i -> if c i then k (Data i) else (Effect (G Get) k)
+          Data i -> if c i then k (Data i) else get >>= k
 
 -- a filter that blocks `Nothing` and output `a` for `Just a`
 -- filterMaybe :: Iter (Sum3 (Get (Data i)) x y) a
 --               -> Iter (Sum3 (Get (Data (Maybe i))) x y) a
 filterMaybe = handleGet f
-  where f h k = Effect (G Get) $ h . \case
+  where f h k = get >>= h . \case
                   NoData        -> k NoData
                   Data (Just i) -> k $ Data i
-                  _             -> Effect (G Get) k
+                  _             -> get >>= k
 
 -- transform :: (a -> b) -> Iter (Sum3 (Get b) x y) c
 --                       -> Iter (Sum3 (Get a) x y) c
 transform f = handleGet g
-  where g h k = Effect (G Get) (h . k . f)
+  where g h k = get >>= h . k . f
 
 -- transformData :: (a -> b) -> Iter (Sum3 (Get (Data b)) x y) c
 --                       -> Iter (Sum3 (Get (Data a)) x y) c
@@ -367,14 +365,14 @@ reorderQuotes = handleGetS f (T.posixSecondsToUTCTime 0, Set.empty)  -- bogus in
             else request
         Nothing -> request
       where
-        request = Effect (G Get) $ \case
+        request = get >>= \case
           -- [todo] [fix] handle this case
-          NoData -> handleGetS flush buf (Effect (G Get) k)
+          NoData -> handleGetS flush buf (get >>= k)
           Data q ->
             let pmax' = packetTime q
                 -- [todo] [fix] multiple quotes for same accept time
                 buf' = Set.insert q buf
-            in h (pmax', buf') (Effect (G Get) k)
+            in h (pmax', buf') (get >>= k)
 
         flush h buf k =
           case Set.minView buf of
