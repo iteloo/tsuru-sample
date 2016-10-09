@@ -15,8 +15,13 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:     Lib
+  exposed-modules:     Quote
+                     , Iter
   build-depends:       base >= 4.7 && < 5
+                     , pcap
+                     , bytestring
+                     , time
+                     , containers
   default-language:    Haskell2010
 
 executable tsuru-sample-exe
@@ -27,10 +32,7 @@ executable tsuru-sample-exe
                        -Wno-partial-type-signatures
   build-depends:       base
                      , tsuru-sample
-                     , pcap
-                     , bytestring
                      , time
-                     , containers
   default-language:    Haskell2010
 
 executable tsuru-sample-exe-profiled
@@ -41,10 +43,7 @@ executable tsuru-sample-exe-profiled
                        -Wno-partial-type-signatures
   build-depends:       base
                      , tsuru-sample
-                     , pcap
-                     , bytestring
                      , time
-                     , containers
   default-language:    Haskell2010
 
 test-suite tsuru-sample-test
