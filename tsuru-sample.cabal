@@ -33,6 +33,11 @@ executable tsuru-sample-exe
   build-depends:       base
                      , tsuru-sample
                      , time
+                     , iteratee
+                     , bytestring
+                     , pcap
+                     , ListLike
+                     , containers
   default-language:    Haskell2010
 
 executable tsuru-sample-exe-profiled
@@ -44,6 +49,11 @@ executable tsuru-sample-exe-profiled
   build-depends:       base
                      , tsuru-sample
                      , time
+                     , iteratee
+                     , bytestring
+                     , pcap
+                     , ListLike
+                     , containers
   default-language:    Haskell2010
 
 test-suite tsuru-sample-test
