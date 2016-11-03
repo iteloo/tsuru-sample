@@ -2,6 +2,9 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 module Main where
 
@@ -20,6 +23,10 @@ import Control.Exception (SomeException)
 import Control.Monad.IO.Class (MonadIO(..))
 import qualified Data.Set as Set
 import qualified Data.List as List
+import qualified Data.IORef as Rf
+import Debug.Trace
+import qualified Data.Vector as V
+import Control.Monad
 
 
 main :: IO ()
@@ -31,23 +38,22 @@ main = do
 
 startApp :: AppSetting -> IO ()
 startApp settings =
-  (enumPcapFile (filename settings)
+  (enumPcapFile 4096 (filename settings)
     $= I.filter (Qu.hasQuoteHeader . snd)
+    -- $= I.take 9
     $= I.mapStream Qu.quoteFromPacket
     $= I.filter (maybe False (const True))
     $= I.mapStream (maybe (error "should be no Nothing here!") id)
-    $= (if reordering settings then reorderQuotes else fmap return)
+    -- $= (if reordering settings then reorderQuotes else fmap return)
     $ I.countConsumed
     $ logIndiv
   ) >>= I.run >>= print
 
-byteCounter :: Monad m => I.Iteratee [Packet] m Int
-byteCounter = I.length
-
 logger = I.mapChunksM_ (liftIO . print)
 
-logIndiv :: _ => I.Iteratee [a] m ()
-logIndiv = I.mapChunksM_ (liftIO . sequence_ . map print)
+logIndiv = I.mapChunksM_ (liftIO . LL.mapM_ print)
+
+logConst = I.mapChunksM_ (liftIO . LL.mapM_ (const $ putStrLn "1"))
 
 data AppSetting = AppSetting {
   filename :: String,
@@ -56,15 +62,39 @@ data AppSetting = AppSetting {
 
 type Packet = (Pcap.PktHdr, BS.ByteString)
 
-enumPcapFile :: FilePath -> I.Enumerator [Packet] IO a
-enumPcapFile fp it = do
+instance I.NullPoint (V.Vector a) where
+  empty = V.empty
+
+instance I.Nullable (V.Vector a) where
+  nullC = V.null
+
+instance I.LooseMap V.Vector a b where
+  lMap = V.map
+
+enumPcapFile :: Int -> FilePath -> I.Enumerator _ IO a
+enumPcapFile cs fp it = do
   handle <- liftIO $ Pcap.openOffline fp
-  let callback :: st -> IO (Either SomeException ((Bool, st), [Packet]))
+  pcapRef <- Rf.newIORef $ V.replicate cs (undefined :: Packet)
+  iref <- Rf.newIORef 0
+  let --callback :: st -> IO (Either SomeException ((Bool, st), _))
       callback st = do
-        (hdr, bs) <- Pcap.nextBS handle
-        if bs == BS.pack ""
-          then return $ Right ((False, st), I.empty) -- yield first? -- [hack]
-          else return $ Right ((True, st), [(hdr, bs)])
+        -- [note] for some reason `n` is 0 even if some packets were read
+        n <- Pcap.dispatchBS handle cs handlePacketRead
+        packets <- Rf.readIORef pcapRef
+        if n==0
+          then do
+            i <- Rf.readIORef iref
+            let last_i = (i - 1) `mod` cs
+            -- yield first?
+            return . Right $ ((False, st), V.slice 0 last_i packets)
+          else
+            return . Right $ ((True, st), packets)
+
+      handlePacketRead hdr bs = do
+        i <- Rf.readIORef iref
+        -- incr counter `i`
+        Rf.modifyIORef' pcapRef (V.// [(i, (hdr, bs))])
+        Rf.modifyIORef' iref $ (`mod` cs) . (+ 1)
   I.enumFromCallback callback () it
 
 parseArgs :: [String] -> Maybe AppSetting

@@ -38,6 +38,7 @@ executable tsuru-sample-exe
                      , pcap
                      , ListLike
                      , containers
+                     , vector
   default-language:    Haskell2010
 
 executable tsuru-sample-exe-profiled
@@ -54,6 +55,7 @@ executable tsuru-sample-exe-profiled
                      , pcap
                      , ListLike
                      , containers
+                     , vector
   default-language:    Haskell2010
 
 test-suite tsuru-sample-test
