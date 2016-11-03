@@ -74,27 +74,16 @@ instance I.LooseMap V.Vector a b where
 enumPcapFile :: Int -> FilePath -> I.Enumerator _ IO a
 enumPcapFile cs fp it = do
   handle <- liftIO $ Pcap.openOffline fp
-  pcapRef <- Rf.newIORef $ V.replicate cs (undefined :: Packet)
-  iref <- Rf.newIORef 0
+  packetsRef <- Rf.newIORef $ ([] :: [Packet])
   let --callback :: st -> IO (Either SomeException ((Bool, st), _))
       callback st = do
         -- [note] for some reason `n` is 0 even if some packets were read
         n <- Pcap.dispatchBS handle cs handlePacketRead
-        packets <- Rf.readIORef pcapRef
-        if n==0
-          then do
-            i <- Rf.readIORef iref
-            let last_i = (i - 1) `mod` cs
-            -- yield first?
-            return . Right $ ((False, st), V.slice 0 last_i packets)
-          else
-            return . Right $ ((True, st), packets)
+        packets <- Rf.readIORef packetsRef
+        Rf.writeIORef packetsRef []
+        return . Right $ ((not $ n==0, st), reverse packets)
 
-      handlePacketRead hdr bs = do
-        i <- Rf.readIORef iref
-        -- incr counter `i`
-        Rf.modifyIORef' pcapRef (V.// [(i, (hdr, bs))])
-        Rf.modifyIORef' iref $ (`mod` cs) . (+ 1)
+      handlePacketRead = curry $ Rf.modifyIORef' packetsRef . (:)
   I.enumFromCallback callback () it
 
 parseArgs :: [String] -> Maybe AppSetting
