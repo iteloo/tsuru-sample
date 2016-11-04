@@ -18,14 +18,14 @@ import Prelude hiding (take, drop, filter)
 import qualified System.Environment as Env
 import qualified Data.Time as T
 import qualified Data.ByteString.Char8 as BS
+import qualified Data.ByteString.Unsafe as BU
+import Foreign.Ptr as FPtr
 import qualified Network.Pcap as Pcap
 import Control.Exception (SomeException)
 import Control.Monad.IO.Class (MonadIO(..))
 import qualified Data.Set as Set
-import qualified Data.List as List
 import qualified Data.IORef as Rf
 import Debug.Trace
-import qualified Data.Vector as V
 import Control.Monad
 
 
@@ -36,24 +36,24 @@ main = do
     Nothing -> print "Usage: parse-quote [-r] <pcap filename>"
     Just appSetting -> startApp appSetting
 
+mapPair f (a,b) = (f a, f b)
+
 startApp :: AppSetting -> IO ()
 startApp settings =
-  (enumPcapFile 4096 (filename settings)
+  (enumPcapFileSingle (filename settings)
     $= I.filter (Qu.hasQuoteHeader . snd)
-    -- $= I.take 9
+    -- $= I.take 100
     $= I.mapStream Qu.quoteFromPacket
     $= I.filter (maybe False (const True))
     $= I.mapStream (maybe (error "should be no Nothing here!") id)
     -- $= (if reordering settings then reorderQuotes else fmap return)
     $ I.countConsumed
-    $ logIndiv
+    $ I.skipToEof
   ) >>= I.run >>= print
 
 logger = I.mapChunksM_ (liftIO . print)
 
 logIndiv = I.mapChunksM_ (liftIO . LL.mapM_ print)
-
-logConst = I.mapChunksM_ (liftIO . LL.mapM_ (const $ putStrLn "1"))
 
 data AppSetting = AppSetting {
   filename :: String,
@@ -62,28 +62,46 @@ data AppSetting = AppSetting {
 
 type Packet = (Pcap.PktHdr, BS.ByteString)
 
-instance I.NullPoint (V.Vector a) where
-  empty = V.empty
+enumPcapFileSingle :: FilePath -> I.Enumerator _ IO a
+enumPcapFileSingle fp it = do
+  handle <- liftIO $ Pcap.openOffline fp
+  let --callback :: st -> IO (Either SomeException ((Bool, st), _))
+      callback st = do
+        (hdr, ptr) <- Pcap.next handle
+        -- [note] no finalizer: memory will not be freed
+        bs <- BU.unsafePackCStringFinalizer
+                ptr
+                (fromIntegral $ Pcap.hdrCaptureLength hdr)
+                (return ())
+        -- alternatively, and equivalently:
+        -- bs <- BU.unsafePackCStringLen
+        --         (FPtr.wordPtrToPtr . FPtr.ptrToWordPtr $ ptr,
+        --         fromIntegral $ Pcap.hdrCaptureLength hdr)
+        return . Right $ ((bs /= BS.pack "", st), [(hdr, bs)])
 
-instance I.Nullable (V.Vector a) where
-  nullC = V.null
+  I.enumFromCallback callback () it
 
-instance I.LooseMap V.Vector a b where
-  lMap = V.map
-
-enumPcapFile :: Int -> FilePath -> I.Enumerator _ IO a
-enumPcapFile cs fp it = do
+-- [problem] doesn't work since ptr is re-used in `dispatch`
+enumPcapFileMany :: Int -> FilePath -> I.Enumerator _ IO a
+enumPcapFileMany cs fp it = do
   handle <- liftIO $ Pcap.openOffline fp
   packetsRef <- Rf.newIORef $ ([] :: [Packet])
   let --callback :: st -> IO (Either SomeException ((Bool, st), _))
       callback st = do
         -- [note] for some reason `n` is 0 even if some packets were read
-        n <- Pcap.dispatchBS handle cs handlePacketRead
+        n <- Pcap.dispatch handle cs handlePacketRead
         packets <- Rf.readIORef packetsRef
         Rf.writeIORef packetsRef []
         return . Right $ ((not $ n==0, st), reverse packets)
 
-      handlePacketRead = curry $ Rf.modifyIORef' packetsRef . (:)
+      handlePacketRead hdr ptr = do
+        -- [note] no finalizer: memory will not be freed
+        bs <- BU.unsafePackCStringFinalizer
+                ptr
+                (fromIntegral $ Pcap.hdrCaptureLength hdr)
+                (return ())
+        Rf.modifyIORef' packetsRef ((hdr, bs):)
+
   I.enumFromCallback callback () it
 
 parseArgs :: [String] -> Maybe AppSetting
