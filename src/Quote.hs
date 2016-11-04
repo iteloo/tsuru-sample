@@ -139,3 +139,11 @@ quoteFromQuotePacket p ptime = do
             q <- safeRead $ BS.unpack qstr
             return (Bid p q : bids, remain')
         ) ([],bs) [1..5]
+
+
+-- helpers
+
+safeRead :: Read a => String -> Maybe a
+safeRead s = case reads s of
+    [(x,"")] -> Just x
+    _ -> Nothing
