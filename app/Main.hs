@@ -1,32 +1,29 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
-{-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 
 module Main where
 
-import qualified Quote as Qu
 import qualified Data.Iteratee as I
 import Data.Iteratee ((=$), ($=))
 import qualified Data.Iteratee.IO as I
 import qualified Data.ListLike as LL
+import Control.Monad.IO.Class (MonadIO(..))
 
-import Prelude hiding (take, drop, filter)
+import Control.Monad
+import Control.Applicative
 import qualified System.Environment as Env
 import qualified Data.Time as T
+import qualified Data.Time.Clock.POSIX as T
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Unsafe as BU
-import Foreign.Ptr as FPtr
 import qualified Network.Pcap as Pcap
-import Control.Exception (SomeException)
-import Control.Monad.IO.Class (MonadIO(..))
+import qualified Foreign.Ptr as FPtr
 import qualified Data.Set as Set
+import qualified Data.List as L
 import qualified Data.IORef as Rf
+import qualified Data.Attoparsec.ByteString.Char8 as AP
 import Debug.Trace
-import Control.Monad
 
 
 main :: IO ()
@@ -36,31 +33,147 @@ main = do
     Nothing -> print "Usage: parse-quote [-r] <pcap filename>"
     Just appSetting -> startApp appSetting
 
-mapPair f (a,b) = (f a, f b)
-
 startApp :: AppSetting -> IO ()
 startApp settings =
   (enumPcapFileSingle (filename settings)
-    $= I.filter (Qu.hasQuoteHeader . snd)
-    -- $= I.take 100
-    $= I.mapStream Qu.quoteFromPacket
-    $= I.filter (maybe False (const True))
-    $= I.mapStream (maybe (error "should be no Nothing here!") id)
+    -- $= I.filter (Qu.hasQuoteHeader . snd)
+    -- $= I.take 20
+    $= I.mapStream parseQuote
+    $= I.filter (either (const False) (const True))
+    $= I.mapStream (either (error "should be no Nothing here!") id)
     -- $= (if reordering settings then reorderQuotes else fmap return)
     $ I.countConsumed
+    -- $ logIndiv
     $ I.skipToEof
   ) >>= I.run >>= print
-
-logger = I.mapChunksM_ (liftIO . print)
-
-logIndiv = I.mapChunksM_ (liftIO . LL.mapM_ print)
 
 data AppSetting = AppSetting {
   filename :: String,
   reordering  :: Bool
 }
 
+parseArgs :: [String] -> Maybe AppSetting
+parseArgs [fn]        = Just $ AppSetting fn False
+parseArgs ["-r", fn]  = Just $ AppSetting fn True
+parseArgs _           = Nothing
+
+
+-- packet parsing (attoparsec)
+
+data Quote = Quote {
+    -- [note] `accepTime` must be first for ordering to work correctly!
+    acceptTime  :: !T.UTCTime,
+    packetTime  :: !T.UTCTime,
+    issueCode   :: !BS.ByteString,
+    bids        :: ![Bid],
+    asks        :: ![Bid]
+  } deriving (Eq, Ord)
+
+instance Show Quote where
+  show = showQuote
+
+data Bid = Bid {
+    price    :: !Int,
+    quantity :: !Int
+  } deriving (Show, Eq, Ord)
+
+showQuote :: Quote -> String
+showQuote q = unwords $ fmap ($ q) [
+    show . packetTime,
+    show . acceptTime,
+    BS.unpack . issueCode,
+    unwords . fmap showBid . bids,
+    unwords . fmap showBid . asks
+  ]
+  where
+    showBid b = (show $ quantity b) ++ "@" ++ (show $ price b)
+
+maxOffset :: T.NominalDiffTime
+maxOffset = 3
+
+parseQuote (hdr, bs) = AP.parseOnly (quote (packetAcceptTimeFromHeader hdr)) bs
+
+packetAcceptTimeFromHeader =
+  T.posixSecondsToUTCTime . fromRational . toRational . Pcap.hdrDiffTime
+
+header = AP.string $ BS.pack "B6034"
+
+upTil p = many (let one = p <|> (AP.anyChar >> one) in one)
+
+parser = upTil header
+
+-- nDigitNumber :: Int -> AP.Parser Int
+-- will throw exceptions if parses doubles instead
+nDigitNumber n = liftM (\(AP.I i) -> fromInteger i)
+    $ AP.take n >>= either fail return . AP.parseOnly AP.number
+
+-- quote ptime =
+--   (,,)
+--   <$ AP.take 42
+--   <* AP.string (BS.pack "B6034")
+--   <*> AP.take 12
+--   <* AP.take 3
+--   <*> bids
+--   <* AP.take 7
+--   <*> asks
+--   <* AP.take 50
+--   <*> (extrapolateAcceptTime ptime <$> acceptTimeOfDay)
+
+quote ptime = do
+  AP.take 42
+  AP.string $ BS.pack "B6034"
+  issueCode <- AP.take 12
+  AP.take 12
+  bs <- bids'
+  AP.take 7
+  as <- asks'
+  AP.take 50
+  aTime <- liftM (extrapolateAcceptTime ptime) acceptTimeOfDay
+  case aTime of
+    Nothing -> fail "cannot parse time"
+    Just t ->
+      return $ Quote t ptime issueCode bs as
+
+bids' = AP.count 5 (Bid <$> nDigitNumber 5 <*> nDigitNumber 7)
+
+-- [todo] verify order
+asks' = reverse <$> bids'
+
+acceptTimeOfDay = do
+  hh <- nDigitNumber 2
+  mm <- nDigitNumber 2
+  ss <- nDigitNumber 2
+  uu <- nDigitNumber 2
+  let pico = fromRational $ ss + uu / 100
+  return $ T.TimeOfDay hh mm pico
+
+extrapolateAcceptTime :: T.UTCTime -> T.TimeOfDay -> Maybe T.UTCTime
+extrapolateAcceptTime ptime aToD =
+  let tzones = [T.hoursToTimeZone 9]
+      -- nondeterministic search for timezone
+      atimes = do
+        tz <- tzones
+        let day = T.localDay $ T.utcToLocalTime tz ptime
+        -- here we account for the possibility that
+        --   the quote was accepted on the previous local day,
+        --   but the packet is accepted on the next day
+        -- [note] uniqueness relies on `maxOffset` being less
+        --   than half a day
+        d <- [day, T.addDays (-1) day]
+        let t = T.LocalTime d aToD
+        return $ T.localTimeToUTC tz t
+  in
+    -- [note] we expect exactly one result assuming that the
+    --   `maxOffset` constraint is satisfied
+    L.find ((< maxOffset) . T.diffUTCTime ptime) atimes
+
+-- iteratees
+
 type Packet = (Pcap.PktHdr, BS.ByteString)
+
+logger = I.mapChunksM_ (liftIO . print)
+
+logIndiv = I.mapChunksM_ (liftIO . LL.mapM_ print)
 
 enumPcapFileSingle :: FilePath -> I.Enumerator _ IO a
 enumPcapFileSingle fp it = do
@@ -104,11 +217,6 @@ enumPcapFileMany cs fp it = do
 
   I.enumFromCallback callback () it
 
-parseArgs :: [String] -> Maybe AppSetting
-parseArgs [fn]        = Just $ AppSetting fn False
-parseArgs ["-r", fn]  = Just $ AppSetting fn True
-parseArgs _           = Nothing
-
 -- reorders quotes based on quote accept time, assuming that
 --   `pt - qt <= 3` for each quote,
 --   where `pt` : packet accept time
@@ -130,7 +238,7 @@ parseArgs _           = Nothing
 --     `pt_f - qt_f = 3 - e/6 < 3`
 --   morever, `qt_q = pt_r - 3 + e > qt_f`
 reorderQuotes = reorder $ \q q' ->
-          T.diffUTCTime (Qu.packetTime q) (Qu.acceptTime q') > Qu.maxOffset
+          T.diffUTCTime (packetTime q) (acceptTime q') > maxOffset
 
 reorder :: (Ord i, Monad m)
   => (i -> i -> Bool)
