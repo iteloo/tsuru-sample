@@ -10,6 +10,8 @@ import qualified Data.Iteratee.IO as I
 import qualified Data.ListLike as LL
 import Control.Monad.IO.Class (MonadIO(..))
 
+import Options.Applicative hiding (header)
+import qualified Options.Applicative as Opt
 import Control.Monad
 import Control.Applicative
 import qualified System.Environment as Env
@@ -28,34 +30,62 @@ import Debug.Trace
 
 main :: IO ()
 main = do
-  args <- Env.getArgs
-  case parseArgs args of
-    Nothing -> print "Usage: parse-quote [-r] <pcap filename>"
-    Just appSetting -> startApp appSetting
+  execParser opts >>= startApp
+  where
+    opts = info (helper <*> appSetting)
+      ( fullDesc
+     <> progDesc "Parses quote data from pcap dump files"
+     <> Opt.header
+          "tsuru-sample - a streaming application for parsing quote data" )
 
 startApp :: AppSetting -> IO ()
-startApp settings =
-  (enumPcapFileSingle (filename settings)
+startApp stg =
+  (enumPcapFileSingle (filename stg) $
     -- $= I.filter (Qu.hasQuoteHeader . snd)
-    -- $= I.take 20
-    $= I.mapStream parseQuote
-    $= I.filter (either (const False) (const True))
-    $= I.mapStream (either (error "should be no Nothing here!") id)
-    -- $= (if reordering settings then reorderQuotes else fmap return)
-    $ I.countConsumed
-    -- $ logIndiv
-    $ I.skipToEof
-  ) >>= I.run >>= print
+    (I.drop (start stg) >>) $
+    (if number stg == (-1) then fmap return else I.take (number stg)) =$
+    I.countConsumed $
+    I.mapStream parseQuote =$
+    I.filter (either (const False) (const True)) =$
+    I.mapStream (either (error "should be no Nothing here!") id) =$
+    (if reordering stg then reorderQuotes else fmap return) =$
+    I.countConsumed $
+    (if silent stg then I.skipToEof else logIndiv)
+  ) >>= I.run >>= \((_,n),m) -> putStrLn
+      $ show m ++ " packets processed. " ++ show n ++ " quotes parsed."
 
 data AppSetting = AppSetting {
-  filename :: String,
-  reordering  :: Bool
+  reordering  :: Bool,
+  start       :: Int,
+  number      :: Int,
+  silent      :: Bool,
+  filename    :: String
 }
 
-parseArgs :: [String] -> Maybe AppSetting
-parseArgs [fn]        = Just $ AppSetting fn False
-parseArgs ["-r", fn]  = Just $ AppSetting fn True
-parseArgs _           = Nothing
+appSetting :: Parser AppSetting
+appSetting = AppSetting
+  <$> switch
+     ( long "reorder"
+    <> short 'r'
+    <> help "Reorder packets based on quote accept time" )
+  <*> option auto
+     ( long "start"
+    <> short 's'
+    <> help "Starting index for packet"
+    <> showDefault
+    <> value 0
+    <> metavar "INT" )
+  <*> option auto
+     ( long "number"
+    <> short 'n'
+    <> help "Maximum number of packets to accept"
+    <> showDefault
+    <> value (-1)  -- [hack]
+    <> metavar "INT" )
+  <*> switch
+     ( long "silent"
+    <> help "Do not log packets" )
+  <*> argument str (metavar "FILE")
 
 
 -- packet parsing (attoparsec)
