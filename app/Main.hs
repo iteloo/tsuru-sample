@@ -7,7 +7,7 @@ import qualified Data.Iteratee as I
 import qualified Data.Iteratee.IO as I
 import Data.Iteratee ((=$), ($=))
 import qualified Attoparsec as AP
-
+import qualified MyIteratee as MyI
 
 import Options.Applicative
 import Control.Applicative
@@ -21,21 +21,33 @@ main = execParser opts >>= startApp
 
 startApp :: AppSetting -> IO ()
 startApp stg =
-  (I.enumPcapFileSingle (filename stg) $
-    (I.drop (start stg) >>) $
-    (if number stg == (-1) then fmap return else I.take (number stg)) =$
-    I.countConsumed $
-    I.mapStream (case library stg of
-      Iteratee   -> first I.toException . runIdentity . I.parseQuote
-      Attoparsec -> first I.iterStrExc . AP.parseQuote) =$
-    I.filter (either (const False) (const True)) =$
-    I.mapStream (either (error "should be no Nothing here!") id) =$
-    (if reordering stg then I.reorderQuotes else fmap return) =$
-    I.countConsumed $
-    (if silent stg then I.skipToEof else I.logIndiv)
-  ) >>= I.run
-    >>= \((_,n),m) -> putStrLn
-      $ show m ++ " packets processed. " ++ show n ++ " quotes parsed."
+  case library stg of
+    MyIteratee ->
+      MyI.streamPackets (filename stg)
+        $ MyI.filter (MyI.hasQuoteHeader . snd)
+        $ MyI.drop (start stg)
+        $ (if number stg == (-1) then id else MyI.take (number stg))
+        $ MyI.transform MyI.quoteFromPacket
+        $ MyI.filterMaybe
+        $ (if reordering stg then MyI.reorderQuotes else id)
+        $ MyI.getForever
+    lib ->
+      (I.enumPcapFileSingle (filename stg) $
+        (I.drop (start stg) >>) $
+        (if number stg == (-1) then fmap return else I.take (number stg)) =$
+        I.countConsumed $
+        I.mapStream (case lib of
+          Iteratee   -> first I.toException . runIdentity . I.parseQuote
+          Attoparsec -> first I.iterStrExc . AP.parseQuote
+          _          -> error "no more choice of libs") =$
+        I.filter (either (const False) (const True)) =$
+        I.mapStream (either (error "should be no Nothing here!") id) =$
+        (if reordering stg then I.reorderQuotes else fmap return) =$
+        I.countConsumed $
+        (if silent stg then I.skipToEof else I.logIndiv)
+      ) >>= I.run
+        >>= \((_,n),m) -> putStrLn
+          $ show m ++ " packets processed. " ++ show n ++ " quotes parsed."
 
 data AppSetting = AppSetting {
   reordering  :: Bool,
@@ -46,7 +58,7 @@ data AppSetting = AppSetting {
   filename    :: String
 }
 
-data Library = Iteratee | Attoparsec
+data Library = Iteratee | Attoparsec | MyIteratee
   deriving (Read, Show)
 
 opts = info (helper <*> appSetting)

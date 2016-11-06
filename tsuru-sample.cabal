@@ -18,6 +18,9 @@ library
   exposed-modules:     Quote
                      , Iteratee
                      , Attoparsec
+                     , MyIteratee
+  other-modules:       MyIteratee.QuoteParsing
+                     , MyIteratee.MyIteratee
   build-depends:       base >= 4.7 && < 5
                      , time
                      , iteratee

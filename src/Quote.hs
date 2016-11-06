@@ -1,6 +1,15 @@
 {-# LANGUAGE NoMonomorphismRestriction #-}
 
-module Quote where
+module Quote (
+    Packet
+  , quoteHeader
+  , packetAcceptTimeFromHeader
+  , extrapolateAcceptTime
+  , Quote(..)
+  , Bid(..)
+  , showQuote
+  , maxOffset
+) where
 
 import qualified Network.Pcap as Pcap
 import qualified Data.Time as T
@@ -14,9 +23,14 @@ type Packet = (Pcap.PktHdr, BS.ByteString)
 
 quoteHeader = BS.pack "B6034"
 
+-- parses packet accept time from pcap header
+-- assumes in POSIX time
 packetAcceptTimeFromHeader =
   T.posixSecondsToUTCTime . fromRational . toRational . Pcap.hdrDiffTime
 
+-- uses the packet accept time and possible list of time zones
+-- to find quote accept time satisfying the 3s constraint
+-- [todo] allow users to specify list of time zones
 extrapolateAcceptTime :: T.UTCTime -> T.TimeOfDay -> Maybe T.UTCTime
 extrapolateAcceptTime ptime aToD =
   let tzones = [T.hoursToTimeZone 9]

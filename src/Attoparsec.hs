@@ -1,7 +1,9 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 
-module Attoparsec where
+module Attoparsec (
+    parseQuote
+) where
 
 import Quote hiding (asks, bids)
 
