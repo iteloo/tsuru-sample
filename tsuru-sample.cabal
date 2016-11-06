@@ -2,21 +2,30 @@ name:                tsuru-sample
 version:             0.1.0.0
 synopsis:            Initial project template from stack
 description:         Please see README.md
-homepage:            https://github.com/githubuser/tsuru-sample#readme
+homepage:            https://github.com/iteloo/tsuru-sample#readme
 license:             BSD3
 license-file:        LICENSE
-author:              Author name here
-maintainer:          example@example.com
-copyright:           2016 Author name here
-category:            Web
+author:              Leo Tingchen Hsu
+maintainer:          iteloo@gmail.com
+copyright:           2016 Leo Tingchen Hsu
+category:            Data
 build-type:          Simple
 -- extra-source-files:
 cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:
+  exposed-modules:     Quote
+                     , Iteratee
+                     , Attoparsec
   build-depends:       base >= 4.7 && < 5
+                     , time
+                     , iteratee
+                     , bytestring
+                     , pcap
+                     , ListLike
+                     , containers
+                     , attoparsec
   default-language:    Haskell2010
 
 executable tsuru-sample-exe
@@ -27,14 +36,9 @@ executable tsuru-sample-exe
                        -Wno-partial-type-signatures
   build-depends:       base
                      , tsuru-sample
-                     , time
                      , iteratee
-                     , bytestring
-                     , pcap
-                     , ListLike
-                     , containers
-                     , attoparsec
                      , optparse-applicative
+                     , mtl
   default-language:    Haskell2010
 
 executable tsuru-sample-exe-profiled
@@ -45,14 +49,9 @@ executable tsuru-sample-exe-profiled
                        -Wno-partial-type-signatures
   build-depends:       base
                      , tsuru-sample
-                     , time
                      , iteratee
-                     , bytestring
-                     , pcap
-                     , ListLike
-                     , containers
-                     , attoparsec
                      , optparse-applicative
+                     , mtl
   default-language:    Haskell2010
 
 test-suite tsuru-sample-test
@@ -66,4 +65,4 @@ test-suite tsuru-sample-test
 
 source-repository head
   type:     git
-  location: https://github.com/githubuser/tsuru-sample
+  location: https://github.com/iteloo/tsuru-sample
