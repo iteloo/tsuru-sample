@@ -3,9 +3,9 @@
 module MyIteratee (
     module MyIteratee.MyIteratee
   , reorderQuotes
-  , streamPackets
+  , enumPcapFile
   , hasQuoteHeader
-  , quoteFromPacket
+  , parseQuote
 ) where
 
 import MyIteratee.MyIteratee
@@ -18,10 +18,10 @@ import qualified Data.Time as T
 
 
 -- enumerator for streaming contents of pcap files
-streamPackets :: FilePath
+enumPcapFile :: FilePath
                   -> Iter (Sum3 (Get (Data Packet)) Printing Exception) a
                   -> IO a
-streamPackets fname it = do
+enumPcapFile fname it = do
   handle <- Pcap.openOffline fname
   let process (Finish a) = return a
       process (Effect (G Get) k) = do

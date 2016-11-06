@@ -27,8 +27,8 @@ hasQuoteHeader :: Payload -> Bool
 hasQuoteHeader = maybe False (== BS.pack "B6034") . range 42 5
 
 -- parses quote object from pcap packet
-quoteFromPacket :: Packet -> Maybe Quote
-quoteFromPacket (hdr, pl) = do
+parseQuote :: Packet -> Maybe Quote
+parseQuote (hdr, pl) = do
   qPkt <- quotePacketFromPayload pl
   let atime = packetAcceptTimeFromHeader hdr
   quoteFromQuotePacket qPkt atime

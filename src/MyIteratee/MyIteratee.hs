@@ -20,6 +20,7 @@ module MyIteratee.MyIteratee (
   , reorder
   , get
   , getForever
+  , logForever
 ) where
 
 import Prelude hiding (take, drop, filter)
@@ -68,11 +69,16 @@ get = Effect (G Get) return
 
 getForever :: Show i => Iter (Sum3 (Get (Data i)) Printing z) ()
 getForever = get >>= \case
+    NoData -> return ()
+    Data x -> getForever
+
+logForever :: Show i => Iter (Sum3 (Get (Data i)) Printing z) ()
+logForever = get >>= \case
     NoData -> do
       printS "End of stream"
     Data x -> do
       printS $ show x
-      getForever
+      logForever
 
 -- a generator for creating stateful handlers of `Get` requests
 handleGetS :: ((s -> Iter (Sum3 (Get i) x y) a -> Iter (Sum3 z x y) a)

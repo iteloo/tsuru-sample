@@ -1,3 +1,4 @@
+{-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 
 module Main where
@@ -16,38 +17,58 @@ import Data.Bifunctor (first)
 import Debug.Trace
 
 
-main :: IO ()
 main = execParser opts >>= startApp
 
-startApp :: AppSetting -> IO ()
 startApp stg =
   case library stg of
-    MyIteratee ->
-      MyI.streamPackets (filename stg)
-        $ MyI.filter (MyI.hasQuoteHeader . snd)
-        $ MyI.drop (start stg)
-        $ (if number stg == (-1) then id else MyI.take (number stg))
-        $ MyI.transform MyI.quoteFromPacket
-        $ MyI.filterMaybe
-        $ (if reordering stg then MyI.reorderQuotes else id)
-        $ MyI.getForever
-    lib ->
-      (I.enumPcapFileSingle (filename stg) $
+    MyIteratee -> let
+      begin it =
+        MyI.enumPcapFile (filename stg)
+          $ MyI.filter (MyI.hasQuoteHeader . snd)
+          $ MyI.drop (start stg)
+          $ (if number stg == (-1) then id else MyI.take (number stg))
+          $ it
+      end = (if silent stg then MyI.getForever else MyI.logForever) in
+      if noparse stg
+        then
+          begin
+            $ end
+        else
+          begin
+            $ MyI.transform MyI.parseQuote
+            $ MyI.filterMaybe
+            $ (if reordering stg then MyI.reorderQuotes else id)
+            $ end
+    lib -> let
+      begin it = I.enumPcapFileMany (chunksize stg) (filename stg) $
         (I.drop (start stg) >>) $
-        (if number stg == (-1) then fmap return else I.take (number stg)) =$
+        (if number stg == (-1) then idEnumeratee else I.take (number stg)) =$
         I.countConsumed $
-        I.mapStream (case lib of
-          Iteratee   -> first I.toException . runIdentity . I.parseQuote
-          Attoparsec -> first I.iterStrExc . AP.parseQuote
-          _          -> error "no more choice of libs") =$
-        I.filter (either (const False) (const True)) =$
-        I.mapStream (either (error "should be no Nothing here!") id) =$
-        (if reordering stg then I.reorderQuotes else fmap return) =$
-        I.countConsumed $
-        (if silent stg then I.skipToEof else I.logIndiv)
-      ) >>= I.run
-        >>= \((_,n),m) -> putStrLn
-          $ show m ++ " packets processed. " ++ show n ++ " quotes parsed."
+        it
+      end = (if silent stg then I.skipToEof else I.logIndiv) in
+      if noparse stg
+        then
+          (begin $
+            end
+          ) >>= I.run
+            >>= \(_,m) -> putStrLn
+              $ show m ++ " packets processed. 0 quotes parsed."
+        else
+          (begin $
+            I.mapStream (case lib of
+              Iteratee   -> first I.toException . runIdentity . I.parseQuote
+              Attoparsec -> first I.iterStrExc . AP.parseQuote
+              _          -> error "no more choice of libs") =$
+            I.filter (either (const False) (const True)) =$
+            I.mapStream (either (error "should be no Nothing here!") id) =$
+            (if reordering stg then I.reorderQuotes else idEnumeratee) =$
+            I.countConsumed $
+            end
+          ) >>= I.run
+            >>= \((_,n),m) -> putStrLn
+              $ show m ++ " packets processed. " ++ show n ++ " quotes parsed."
+  where
+    idEnumeratee = fmap return
 
 data AppSetting = AppSetting {
   reordering  :: Bool,
@@ -55,6 +76,8 @@ data AppSetting = AppSetting {
   number      :: Int,
   silent      :: Bool,
   library     :: Library,
+  chunksize   :: Int,
+  noparse     :: Bool,
   filename    :: String
 }
 
@@ -67,7 +90,6 @@ opts = info (helper <*> appSetting)
  <> header
       "tsuru-sample - a streaming application for parsing quote data" )
 
-appSetting :: Parser AppSetting
 appSetting = AppSetting
   <$> switch
      ( long "reorder"
@@ -97,4 +119,14 @@ appSetting = AppSetting
     <> showDefault
     <> value Iteratee
     <> metavar "LIBRARY" )
+  <*> option auto
+     ( long "chunksize"
+    <> short 'c'
+    <> help "Chunk size when using the Iteratee and Attoparsec libraries"
+    <> showDefault
+    <> value 4096
+    <> metavar "INT" )
+  <*> switch
+     ( long "noparse"
+    <> help "Directly print out packets without parsing" )
   <*> argument str (metavar "FILE")

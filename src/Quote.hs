@@ -31,7 +31,6 @@ packetAcceptTimeFromHeader =
 -- uses the packet accept time and possible list of time zones
 -- to find quote accept time satisfying the 3s constraint
 -- [todo] allow users to specify list of time zones
-extrapolateAcceptTime :: T.UTCTime -> T.TimeOfDay -> Maybe T.UTCTime
 extrapolateAcceptTime ptime aToD =
   let tzones = [T.hoursToTimeZone 9]
       -- nondeterministic search for timezone
@@ -68,7 +67,6 @@ data Bid = Bid {
     quantity :: !Int
   } deriving (Show, Eq, Ord)
 
-showQuote :: Quote -> String
 showQuote q = unwords $ fmap ($ q) [
     show . packetTime,
     show . acceptTime,
@@ -79,5 +77,4 @@ showQuote q = unwords $ fmap ($ q) [
   where
     showBid b = (show $ quantity b) ++ "@" ++ (show $ price b)
 
-maxOffset :: T.NominalDiffTime
-maxOffset = 3
+maxOffset = 3 :: T.NominalDiffTime

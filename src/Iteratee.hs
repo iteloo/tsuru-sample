@@ -6,8 +6,12 @@ module Iteratee (
     parseQuote
   , logger
   , logIndiv
+  , resizeChunks
   , enumPcapFileSingle
   , enumPcapFileMany
+  , enumPcapFileMany'
+  , unsafeEnumPcapFileSingle
+  , unsafeEnumPcapFileMany
   , reorderQuotes
 ) where
 
@@ -19,6 +23,7 @@ import qualified Data.Iteratee.IO as I
 import qualified Data.ListLike as LL
 import Control.Monad.IO.Class (MonadIO(..))
 
+import Control.Monad
 import Control.Applicative
 import qualified Data.Time as T
 import qualified Data.ByteString.Char8 as BS
@@ -108,8 +113,52 @@ logger = I.mapChunksM_ (liftIO . print)
 
 logIndiv = I.mapChunksM_ (liftIO . LL.mapM_ print)
 
+resizeChunks n it =
+    I.Iteratee $ \od oc -> let
+        od' x _        = I.runIter (return (return x)) od oc
+        oc' k Nothing  = I.runIter (do
+            isEOF <- I.isStreamFinished
+            case isEOF of
+              Nothing ->
+                (I.take n =$ I.stream2stream) >>= resizeChunks n . k . I.Chunk
+              e -> resizeChunks n . k . I.EOF $ e
+          ) od oc
+        oc' _ (Just e) = I.runIter (I.throwErr e) od oc
+      in I.runIter it od' oc'
+
 enumPcapFileSingle :: FilePath -> I.Enumerator _ IO a
 enumPcapFileSingle fp it = do
+  handle <- liftIO $ Pcap.openOffline fp
+  let --callback :: st -> IO (Either SomeException ((Bool, st), _))
+      callback st = do
+        (hdr, bs) <- Pcap.nextBS handle
+        return . Right $ ((bs /= BS.pack "", st), [(hdr, bs)])
+
+  I.enumFromCallback callback () it
+
+enumPcapFileMany :: Int -> FilePath -> I.Enumerator _ IO a
+enumPcapFileMany cs fp = enumPcapFileSingle fp $= resizeChunks cs
+
+-- [note] for some reason this version is much much slower for large `cs`
+enumPcapFileMany' :: Int -> FilePath -> I.Enumerator [Packet] IO a
+enumPcapFileMany' cs fp it = do
+  handle <- liftIO $ Pcap.openOffline fp
+  let --callback :: st -> IO (Either SomeException ((Bool, st), _))
+      callback st = do
+        chunk <- getMany cs
+        return . Right $ ((not (null chunk), st), chunk)
+        where
+          getMany 0 = return []
+          getMany n = do
+            (hdr, bs) <- Pcap.nextBS handle
+            if bs /= BS.pack ""
+              then liftM ((hdr, bs):) $ getMany (n-1)
+              else return []
+
+  I.enumFromCallback callback () it
+
+unsafeEnumPcapFileSingle :: FilePath -> I.Enumerator _ IO a
+unsafeEnumPcapFileSingle fp it = do
   handle <- liftIO $ Pcap.openOffline fp
   let --callback :: st -> IO (Either SomeException ((Bool, st), _))
       callback st = do
@@ -128,8 +177,8 @@ enumPcapFileSingle fp it = do
   I.enumFromCallback callback () it
 
 -- [problem] doesn't work since ptr is re-used in `dispatch`
-enumPcapFileMany :: Int -> FilePath -> I.Enumerator _ IO a
-enumPcapFileMany cs fp it = do
+unsafeEnumPcapFileMany :: Int -> FilePath -> I.Enumerator _ IO a
+unsafeEnumPcapFileMany cs fp it = do
   handle <- liftIO $ Pcap.openOffline fp
   packetsRef <- Rf.newIORef $ ([] :: [Packet])
   let --callback :: st -> IO (Either SomeException ((Bool, st), _))
@@ -170,25 +219,24 @@ enumPcapFileMany cs fp it = do
 --     `pt_f > pt_r`
 --     `pt_f - qt_f = 3 - e/6 < 3`
 --   morever, `qt_q = pt_r - 3 + e > qt_f`
-reorderQuotes = reorder $ \q q' ->
-          T.diffUTCTime (packetTime q) (acceptTime q') > maxOffset
+reorderQuotes = reorder $ \q ->
+  -- [hack] this dummy quote is made purely for reordering to work
+  q { acceptTime = T.addUTCTime (-maxOffset) (packetTime q) }
 
 reorder :: (Ord i, Monad m)
-  => (i -> i -> Bool)
+  => (i -> i) -- [hack] make dummy to get the O(log n) time of Set.split
   -> I.Enumeratee [i] [i] m a
-reorder cond = unfoldConvStreamFinish update fin (undefined, Set.empty)
+reorder dummy = unfoldConvStreamFinish update fin (undefined, Set.empty)
   where
     update (i, buf) =
-      case Set.minView buf of
-        Just (i', buf') ->
-          if cond i i'
-            then return ((i, buf'), [i'])
-            else request
-        Nothing -> request
+      let (is, buf') = Set.split (dummy i) buf
+      in if Set.null is
+        then request
+        else return ((i, buf'), Set.toAscList is)
       where
         request = I.getChunk >>= \is ->
           return ((maximum is, Set.fromList is `Set.union` buf), [])
-    fin (_, buf) = Set.toList buf
+    fin (_, buf) = Set.toAscList buf
 
 unfoldConvStreamFinish ::
   (Monad m, I.Nullable s)
