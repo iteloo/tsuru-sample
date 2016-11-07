@@ -117,7 +117,7 @@ appSetting = AppSetting
     <> short 'l'
     <> help "Streaming library to use."
     <> showDefault
-    <> value Iteratee
+    <> value Attoparsec
     <> metavar "LIBRARY" )
   <*> option auto
      ( long "chunksize"

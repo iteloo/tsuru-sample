@@ -36,7 +36,8 @@ import Debug.Trace
 
 
 parseQuote :: _ => Packet -> m (Either I.IFException Quote)
-parseQuote (hdr, bs) = (I.enumPureNChunk bs 1 $ quote (packetAcceptTimeFromHeader hdr)) >>= I.tryRun
+parseQuote (hdr, bs) =
+  (I.enumPure1Chunk bs $ quote (packetAcceptTimeFromHeader hdr)) >>= I.tryRun
 
 quote ptime = do
   I.drop 42
@@ -74,34 +75,13 @@ nDigitNumber n = do
     (return . foldr (\(i,d) a -> a + d*10^i) 0 . zip [n-1,n-2..0])
     (mapM digitToInt $ LL.toString ds)
 
-digitToInt = \case
-  '0' -> Just 0
-  '1' -> Just 1
-  '2' -> Just 2
-  '3' -> Just 3
-  '4' -> Just 4
-  '5' -> Just 5
-  '6' -> Just 6
-  '7' -> Just 7
-  '8' -> Just 8
-  '9' -> Just 9
-  _   -> Nothing
-
--- [problem] test this. too polymorphic?
--- digitToInt c
---   | (fromIntegral i::Word) <= 9 = Just i
---   | otherwise = Nothing
---   where
---     i = fromEnum c - fromEnum '0'
-
--- test = BS.pack $ replicate 42 'a'
---           ++ "B6034"
---           ++ "K23456789012"
---           ++ replicate 12 'b'
---           ++ "100001000000200002000000300003000000400004000000500005000000"
---           ++ replicate 7 'c'
---           ++ "100001000000200002000000300003000000400004000000500005000000"
---           ++ replicate 50 's'
+digitToInt :: Char -> Maybe Int
+digitToInt c
+  | (fromIntegral i::Word) <= 9 = Just i
+  | otherwise = Nothing
+  where
+    i = fromEnum c - fromEnum '0'
+{-# INLINE digitToInt #-}
 
 exact s = do
   n <- I.heads s
@@ -229,14 +209,14 @@ reorder :: (Ord i, Monad m)
 reorder dummy = unfoldConvStreamFinish update fin (undefined, Set.empty)
   where
     update (i, buf) =
-      let (is, buf') = Set.split (dummy i) buf
-      in if Set.null is
-        then request
+      let (is, buf') = Set.split (dummy i) buf in
+      if Set.null is
+        then do
+          chunk <- I.getChunk
+          return ((maximum chunk, Set.fromList chunk `Set.union` buf), [])
         else return ((i, buf'), Set.toAscList is)
-      where
-        request = I.getChunk >>= \is ->
-          return ((maximum is, Set.fromList is `Set.union` buf), [])
     fin (_, buf) = Set.toAscList buf
+{-# INLINE reorder #-}
 
 unfoldConvStreamFinish ::
   (Monad m, I.Nullable s)
@@ -251,3 +231,4 @@ unfoldConvStreamFinish f fin acc0 = I.eneeCheckIfDonePass (check acc0)
                    maybe (step acc k) (I.idone (k . I.Chunk $ fin acc) . I.EOF . Just)
    step acc k = f acc >>= \(acc', s') ->
                    I.eneeCheckIfDonePass (check acc') . k . I.Chunk $ s'
+{-# INLINE unfoldConvStreamFinish #-}
