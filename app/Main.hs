@@ -1,6 +1,8 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 
+{-# LANGUAGE FlexibleContexts #-}
+
 module Main where
 
 import qualified Iteratee as I
@@ -10,6 +12,7 @@ import Data.Iteratee ((=$), ($=))
 import qualified Attoparsec as AP
 import qualified MyIteratee as MyI
 
+import System.IO
 import Options.Applicative
 import Control.Applicative
 import Control.Monad.Identity (runIdentity)
@@ -19,14 +22,17 @@ import Debug.Trace
 
 main = execParser opts >>= startApp
 
-startApp stg =
+startApp stg = do
+  hSetBuffering stdout (BlockBuffering (buffersize stg))
+  hSetBinaryMode stdout True
   case library stg of
     MyIteratee -> let
       begin it =
         MyI.enumPcapFile (filename stg)
           $ MyI.filter (MyI.hasQuoteHeader . snd)
           $ MyI.drop (start stg)
-          $ (if number stg == (-1) then id else MyI.take (number stg))
+          $ maybe id MyI.take (number stg)
+          -- $ (if number stg == (-1) then id else MyI.take (number stg))
           $ it
       end = (if silent stg then MyI.getForever else MyI.logForever) in
       if noparse stg
@@ -42,14 +48,14 @@ startApp stg =
     lib -> let
       begin it = I.enumPcapFileMany (chunksize stg) (filename stg) $
         (I.drop (start stg) >>) $
-        (if number stg == (-1) then idEnumeratee else I.take (number stg)) =$
+        maybe idEnumeratee I.take (number stg) =$
+        -- (if number stg == (-1) then idEnumeratee else I.take (number stg)) =$
         I.countConsumed $
-        it
-      end = (if silent stg then I.skipToEof else I.logIndiv) in
+        it in
       if noparse stg
         then
           (begin $
-            end
+            (if silent stg then I.skipToEof else I.logIndiv)
           ) >>= I.run
             >>= \(_,m) -> putStrLn
               $ show m ++ " packets processed. 0 quotes parsed."
@@ -63,7 +69,7 @@ startApp stg =
             I.mapStream (either (error "should be no Nothing here!") id) =$
             (if reordering stg then I.reorderQuotes else idEnumeratee) =$
             I.countConsumed $
-            end
+            (if silent stg then I.skipToEof else I.logIndivQuote)
           ) >>= I.run
             >>= \((_,n),m) -> putStrLn
               $ show m ++ " packets processed. " ++ show n ++ " quotes parsed."
@@ -73,11 +79,12 @@ startApp stg =
 data AppSetting = AppSetting {
   reordering  :: Bool,
   start       :: Int,
-  number      :: Int,
+  number      :: Maybe Int,
   silent      :: Bool,
   library     :: Library,
   chunksize   :: Int,
   noparse     :: Bool,
+  buffersize  :: Maybe Int,
   filename    :: String
 }
 
@@ -102,13 +109,11 @@ appSetting = AppSetting
     <> showDefault
     <> value 0
     <> metavar "INT" )
-  <*> option auto
+  <*> (optional $ option auto
      ( long "number"
     <> short 'n'
     <> help "Maximum number of packets to accept"
-    -- do not show default
-    <> value (-1)  -- [hack]
-    <> metavar "INT" )
+    <> metavar "INT" ))
   <*> switch
      ( long "silent"
     <> help "Do not log packets" )
@@ -129,4 +134,8 @@ appSetting = AppSetting
   <*> switch
      ( long "noparse"
     <> help "Directly print out packets without parsing" )
+  <*> (optional $ option auto
+     ( long "buffersize"
+    <> help "size of output buffer. System dependent if unspecified."
+    <> metavar "INT" ))
   <*> argument str (metavar "FILE")

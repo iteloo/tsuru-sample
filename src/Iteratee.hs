@@ -2,10 +2,14 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 
+{-# LANGUAGE FlexibleContexts #-}
+
 module Iteratee (
     parseQuote
   , logger
   , logIndiv
+  , logIndivBuilder
+  , logIndivQuote
   , resizeChunks
   , enumPcapFileSingle
   , enumPcapFileMany
@@ -25,8 +29,10 @@ import Control.Monad.IO.Class (MonadIO(..))
 
 import Control.Monad
 import Control.Applicative
+import System.IO (stdout)
 import qualified Data.Time as T
 import qualified Data.ByteString.Char8 as BS
+import qualified Data.ByteString.Builder as BS
 import qualified Data.ByteString.Unsafe as BU
 import qualified Network.Pcap as Pcap
 -- import qualified Foreign.Ptr as FPtr
@@ -90,6 +96,12 @@ exact s = do
     else I.throwErr . I.iterStrExc $ "exact: no match"
 
 logger = I.mapChunksM_ (liftIO . print)
+
+logIndivBuilder =
+  I.mapChunksM_ (liftIO . LL.mapM_ (BS.hPutBuilder stdout))
+
+logIndivQuote =
+  I.mapChunksM_ (liftIO . LL.mapM_ (BS.hPutBuilder stdout . quoteBuilder))
 
 logIndiv = I.mapChunksM_ (liftIO . LL.mapM_ print)
 
@@ -218,6 +230,8 @@ reorder dummy = unfoldConvStreamFinish update fin (undefined, Set.empty)
     fin (_, buf) = Set.toAscList buf
 {-# INLINE reorder #-}
 
+-- small modification of `I.unfoldConvStream` to accept a specialized
+--   finishing routine
 unfoldConvStreamFinish ::
   (Monad m, I.Nullable s)
     => (acc -> I.Iteratee s m (acc, s'))
