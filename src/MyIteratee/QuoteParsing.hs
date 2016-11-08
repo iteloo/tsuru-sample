@@ -1,4 +1,6 @@
-module MyIteratee.QuoteParsing where
+module MyIteratee.QuoteParsing (
+    parseQuote
+) where
 
 import Quote
 
@@ -28,10 +30,11 @@ hasQuoteHeader = maybe False (== BS.pack "B6034") . range 42 5
 
 -- parses quote object from pcap packet
 parseQuote :: Packet -> Maybe Quote
-parseQuote (hdr, pl) = do
-  qPkt <- quotePacketFromPayload pl
-  let atime = packetAcceptTimeFromHeader hdr
-  quoteFromQuotePacket qPkt atime
+parseQuote (hdr, pl) =
+  if hasQuoteHeader pl
+    then quotePacketFromPayload pl
+        >>= quoteFromQuotePacket (packetAcceptTimeFromHeader hdr)
+    else fail "cannot find header"  -- this is ignored in `Maybe`
 
 -- parses UDP payload into quote packets
 quotePacketFromPayload :: Payload -> Maybe QuotePacket
@@ -39,8 +42,8 @@ quotePacketFromPayload = range 42 215
 
 -- constructs quote object from quote packet and packet accept time
 -- does not check that quote packet begins with "B6034"
-quoteFromQuotePacket :: QuotePacket -> T.UTCTime -> Maybe Quote
-quoteFromQuotePacket p ptime = do
+quoteFromQuotePacket :: T.UTCTime -> QuotePacket -> Maybe Quote
+quoteFromQuotePacket ptime p = do
   aToD <- parseAcceptTimeOfDay =<< range 206 8 p
   -- [todo] handle exception explicitly
   acceptTime <- extrapolateAcceptTime ptime aToD

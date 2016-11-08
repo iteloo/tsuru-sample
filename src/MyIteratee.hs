@@ -4,7 +4,6 @@ module MyIteratee (
     module MyIteratee.MyIteratee
   , reorderQuotes
   , enumPcapFile
-  , hasQuoteHeader
   , parseQuote
 ) where
 
