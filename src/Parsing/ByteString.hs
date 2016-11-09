@@ -1,8 +1,8 @@
-module MyIteratee.QuoteParsing (
+module Parsing.ByteString (
     parseQuote
 ) where
 
-import Quote
+import Parsing.Base
 
 import Control.Monad
 import qualified Network.Pcap as Pcap

@@ -6,7 +6,7 @@
 -- Copyright:   (c) 2011 MailRank, Inc.
 --              (c) 2013 Simon Meier <iridcode@gmail.com>
 
-module Builder (
+module Streaming.Builder.UTCTime (
     utcTime
 ) where
 

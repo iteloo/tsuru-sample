@@ -1,11 +1,11 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 
-module Attoparsec (
+module Parsing.Attoparsec (
     parseQuote
 ) where
 
-import Quote hiding (asks, bids)
+import Parsing.Base hiding (asks, bids)
 
 import Control.Monad
 import Control.Applicative
@@ -23,8 +23,9 @@ nDigitNumber n = AP.take n
 quote ptime = do
   AP.take 42
   AP.string quoteHeader
-  -- [note] the following can be used instead if the header had variable locations, which
-  --   is not the case for the sample input:
+  -- [note] the following can be used instead if the header had variable
+  --   locations, which is not the case for the sample input, though better
+  --   solution without backtracking is preferred: 
   -- AP.manyTill AP.anyChar (AP.string quoteHeader)
   issueCode <- AP.take 12
   AP.take 12
@@ -35,8 +36,7 @@ quote ptime = do
   aToD <- acceptTimeOfDay
   case extrapolateAcceptTime ptime aToD of
     Nothing -> fail "cannot parse time"
-    Just t ->
-      return $ Quote t ptime issueCode bs as
+    Just t -> return $ Quote t ptime issueCode bs as
 
 -- partly applicative version of `quote`
 -- [question] why is this slightly slower than the
