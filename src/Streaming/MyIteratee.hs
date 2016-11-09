@@ -1,15 +1,13 @@
 {-# LANGUAGE GADTs #-}
 
-module MyIteratee (
-    module MyIteratee.MyIteratee
-  , reorderQuotes
+module Streaming.MyIteratee (
+    module Data.MyIteratee
   , enumPcapFile
-  , parseQuote
+  , reorderQuotes
 ) where
 
-import MyIteratee.MyIteratee
-import MyIteratee.QuoteParsing
-import Quote
+import Data.MyIteratee
+import Base
 
 import qualified Network.Pcap as Pcap
 import qualified Data.ByteString.Char8 as BS
@@ -17,25 +15,17 @@ import qualified Data.Time as T
 
 
 -- enumerator for streaming contents of pcap files
-enumPcapFile :: FilePath
-                  -> Iter (Sum3 (Get (Data Packet)) Printing Exception) a
-                  -> IO a
 enumPcapFile fname it = do
   handle <- Pcap.openOffline fname
-  let process (Finish a) = return a
-      process (Effect (G Get) k) = do
-          (hdr, bs) <- Pcap.nextBS handle
-          process . k $ if bs == BS.pack ""
-            then NoData
-            else Data (hdr, bs)
-      process (Effect (P (Print s)) k) = do
-        putStrLn s
-        process (k ())
-      process (Effect (T (Throw s)) _) = do
-        -- [todo] handle better
-        putStrLn s
-        error s
-  process it
+  let
+    onFinish = return
+    onGet = do
+      (hdr, bs) <- Pcap.nextBS handle
+      return $ if bs == BS.pack "" then Nothing else Just (hdr, bs)
+    onPrint = putStrLn
+    -- [todo] handle better
+    onThrow = putStrLn
+  enumFromHandlers onFinish onGet onPrint onThrow it
   -- [note] no need/way to close handle
 
 -- reorders quotes based on quote accept time, assuming that

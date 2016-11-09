@@ -5,13 +5,8 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 
-module MyIteratee.MyIteratee (
-    Iter(..)
-  , Get(..)
-  , Printing(..)
-  , Exception(..)
-  , Sum3(..)
-  , Data(..)
+module Data.MyIteratee (
+    enumFromHandlers
   , take
   , drop
   , filter
@@ -25,9 +20,6 @@ module MyIteratee.MyIteratee (
 
 import Prelude hiding (take, drop, filter)
 import Control.Monad
-import qualified Data.Time as T
-import qualified Network.Pcap as Pcap
-import qualified Data.ByteString.Char8 as BS
 import qualified Data.Set as Set
 
 
@@ -61,6 +53,23 @@ data Sum3 (f :: * -> *) (g :: * -> *) (h :: * -> *) x
     = G (f x) | P (g x) | T (h x)
 
 data Data a = NoData | Data a
+
+
+-- enumerator generator
+
+enumFromHandlers :: (Monad m)
+  => (a -> m a)
+  -> m (Maybe i)
+  -> (String -> m ())
+  -> (String -> m a)
+  -> Iter (Sum3 (Get (Data i)) Printing Exception) a
+  -> m a
+enumFromHandlers onFinish onGet onPrint onThrow = process
+  where
+    process (Finish a) = onFinish a
+    process (Effect (G Get) k) = process . k . maybe NoData Data =<< onGet
+    process (Effect (P (Print s)) k) = onPrint s >> process (k ())
+    process (Effect (T (Throw s)) _) = onThrow s
 
 -- get effect
 

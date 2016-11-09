@@ -1,11 +1,11 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 
-module Attoparsec (
+module Parsing.Attoparsec (
     parseQuote
 ) where
 
-import Quote hiding (asks, bids)
+import Parsing.Base hiding (asks, bids)
 
 import Control.Monad
 import Control.Applicative
@@ -35,8 +35,7 @@ quote ptime = do
   aToD <- acceptTimeOfDay
   case extrapolateAcceptTime ptime aToD of
     Nothing -> fail "cannot parse time"
-    Just t ->
-      return $ Quote t ptime issueCode bs as
+    Just t -> return $ Quote t ptime issueCode bs as
 
 -- partly applicative version of `quote`
 -- [question] why is this slightly slower than the

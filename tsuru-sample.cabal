@@ -15,16 +15,20 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:     Quote
-                     , Iteratee
-                     , Attoparsec
-                     , MyIteratee
-                     , Builder
-  other-modules:       MyIteratee.QuoteParsing
-                     , MyIteratee.MyIteratee
+  exposed-modules:     Parsing.Attoparsec
+                     , Parsing.Iteratee
+                     , Parsing.ByteString
+                     , Streaming.Iteratee
+                     , Streaming.MyIteratee
+  other-modules:       Base
+                     , Parsing.Base
+                     , Streaming.Builder.Quote
+                     , Streaming.Builder.UTCTime
+                     , Quote
   build-depends:       base >= 4.7 && < 5
                      , time
                      , iteratee
+                     , myiteratee
                      , bytestring
                      , pcap
                      , ListLike

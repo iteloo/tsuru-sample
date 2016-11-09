@@ -4,13 +4,15 @@
 
 module Main where
 
-import qualified Iteratee as I
+import qualified Streaming.Iteratee as I
+import qualified Streaming.MyIteratee as MyI
+import qualified Parsing.Iteratee as I
+import qualified Parsing.Attoparsec as A
+import qualified Parsing.ByteString as B
+
 import qualified Data.Iteratee as I
 import qualified Data.Iteratee.IO as I
 import Data.Iteratee ((=$), ($=))
-import qualified Attoparsec as A
-import qualified MyIteratee as MyI
-
 import System.IO
 import Options.Applicative
 import Control.Monad.Identity (runIdentity)
@@ -40,7 +42,7 @@ startApp stg = do
             $ MyI.transform (case parsinglib stg of
                 PIteratee  -> eitherToMaybe . runIdentity . I.parseQuote
                 PAttoparsec -> eitherToMaybe . A.parseQuote
-                PByteString -> MyI.parseQuote )
+                PByteString -> B.parseQuote )
             $ MyI.filterMaybe
             $ (if reordering stg then MyI.reorderQuotes else id)
             $ end
@@ -63,7 +65,7 @@ startApp stg = do
               PIteratee  -> first I.toException . runIdentity . I.parseQuote
               PAttoparsec -> first I.iterStrExc . A.parseQuote
               PByteString -> maybeToEither (I.iterStrExc "quote parse error")
-                . MyI.parseQuote ) =$
+                . B.parseQuote ) =$
             I.filter (either (const False) (const True)) =$
             I.mapStream (either (error "should be no Nothing here!") id) =$
             (if reordering stg then I.reorderQuotes else idEnumeratee) =$
